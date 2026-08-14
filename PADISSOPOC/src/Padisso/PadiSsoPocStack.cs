@@ -98,6 +98,16 @@ namespace Padisso
                 MemorySize = 256,
             });
 
+            var postAuthFn = new Function(this, "PostAuthenticationFn", new FunctionProps
+            {
+                FunctionName = "padi-sso-poc-post-auth",
+                Runtime = Runtime.DOTNET_10,
+                Handler = "PostAuthentication::Padisso.Cognito.PostAuthentication.Function::Handler",
+                Code = LambdaCode("PostAuthentication"),
+                Timeout = Duration.Seconds(5),
+                MemorySize = 256,
+            });
+
             var verifyFn = new Function(this, "VerifyAuthChallengeFn", new FunctionProps
             {
                 FunctionName = "padi-sso-poc-verify-auth",
@@ -150,6 +160,8 @@ namespace Padisso
                 {
                     ["padi_id"]      = new StringAttribute(new StringAttributeProps { Mutable = true }),
                     ["affiliate_id"] = new StringAttribute(new StringAttributeProps { Mutable = true }),
+                    // Written by the PostAuthentication trigger on every sign-in.
+                    ["last_login"]   = new StringAttribute(new StringAttributeProps { Mutable = true }),
                 },
                 PasswordPolicy = new PasswordPolicy
                 {
@@ -166,6 +178,27 @@ namespace Padisso
                     DefineAuthChallenge = defineFn,
                     CreateAuthChallenge = createFn,
                     VerifyAuthChallengeResponse = verifyFn,
+                    PostAuthentication = postAuthFn,
+                },
+            });
+
+            // Attached as a standalone Policy rather than via postAuthFn.AddToRolePolicy().
+            // The pool references this function in LambdaConfig, and CDK makes a function
+            // DependsOn its role's default policy — so putting a UserPoolArn reference in
+            // that default policy closes a cycle:
+            //   UserPool -> PostAuthenticationFn -> DefaultPolicy -> UserPool
+            // A separate Policy resource has no incoming edge from the function, so the
+            // graph stays acyclic while the permission remains scoped to this pool.
+            new Policy(this, "PostAuthCognitoPolicy", new PolicyProps
+            {
+                Roles = new[] { postAuthFn.Role! },
+                Statements = new[]
+                {
+                    new PolicyStatement(new PolicyStatementProps
+                    {
+                        Actions   = new[] { "cognito-idp:AdminUpdateUserAttributes" },
+                        Resources = new[] { UserPool.UserPoolArn },
+                    }),
                 },
             });
 

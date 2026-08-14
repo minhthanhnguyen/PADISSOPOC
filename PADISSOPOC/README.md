@@ -14,16 +14,17 @@ src/
   Lambdas/
     MagicLink.Shared/         Config, Crypto, Http, IMagicLinkChannel  (no AWS SDK deps)
     MagicLink.Aws/            AWS clients, SES/SNS delivery channels
-    DefineAuthChallenge/      Cognito trigger
-    CreateAuthChallenge/      Cognito trigger
-    VerifyAuthChallenge/      Cognito trigger
+    DefineAuthChallenge/      Cognito trigger — custom auth
+    CreateAuthChallenge/      Cognito trigger — custom auth
+    VerifyAuthChallenge/      Cognito trigger — custom auth
+    PostAuthentication/       Cognito trigger — audit log + last-login
     RequestMagicLink/         Lambda Function URL
     VerifyMagicLink/          Lambda Function URL
 publish-lambdas.ps1           Publishes all five Lambdas
 cdk.json                      Environment configuration (context block)
 ```
 
-`MagicLink.Shared` deliberately carries no AWS dependencies, keeping the three Cognito triggers around 110 KB instead of bundling SDKs they never call. `MagicLink.Aws` holds the clients and is referenced only by the functions that talk to AWS services.
+`MagicLink.Shared` deliberately carries no AWS dependencies, keeping the three custom-auth triggers around 110 KB instead of bundling SDKs they never call. `MagicLink.Aws` holds the clients and is referenced only by the functions that talk to AWS services. `PostAuthentication` follows the same principle — it references the Cognito SDK directly rather than `MagicLink.Aws`, which would have pulled in DynamoDB, SES and SNS for no reason.
 
 ---
 
@@ -35,7 +36,7 @@ cdk.json                      Environment configuration (context block)
 | Feature plan | `essentials` |
 | Sign-in alias | Username only, **case-insensitive** |
 | Optional attributes | email, phone_number, given_name, family_name, birthdate |
-| Custom attributes | `custom:padi_id`, `custom:affiliate_id` |
+| Custom attributes | `custom:padi_id`, `custom:affiliate_id`, `custom:last_login` |
 | Password policy | 6+ chars, upper + lower required; digits and symbols not required |
 | Account recovery | Email and phone, no MFA |
 | Passkey relying party | `padi.com` |
@@ -81,6 +82,37 @@ POST /verify-link    { "token": "…" }
 ### Delivery channels
 
 `IMagicLinkChannel` abstracts transport *and* presentation, since a URL that reads well in email is hostile inside a 160-character SMS segment. Channel is explicit in the request and defaults to email — inferring it would be ambiguous for a user with both an email address and a phone number.
+
+---
+
+## Post-authentication trigger
+
+Fires on every successful sign-in, before tokens are issued. Two responsibilities:
+
+**Audit logging** — one JSON object per sign-in, single-line so CloudWatch Logs Insights can query the fields directly:
+
+| Field | |
+|---|---|
+| `eventType` | Always `SignIn` |
+| `timestamp` | ISO 8601, UTC |
+| `userPoolId`, `userName`, `sub`, `email` | Identity |
+| `triggerSource`, `clientId` | Origin of the sign-in |
+| `identities` | Populated for federated sign-ins — distinguishes Google from native |
+| `padiId` | `custom:padi_id`, if set |
+| `newDeviceUsed` | Cognito device tracking |
+| `requestId` | Lambda request ID, for correlation |
+
+**Last-login tracking** — writes an ISO 8601 timestamp to `custom:last_login` via `AdminUpdateUserAttributes`. IAM is scoped to the pool ARN.
+
+### Failure behaviour
+
+A PostAuthentication trigger that throws **fails the user's sign-in**. Both operations are therefore independently wrapped and the handler always returns the event — a Cognito API blip yields a stale `custom:last_login`, never a failed login. Audit logging runs before the attribute write so a write failure cannot cost the audit record.
+
+### Caveats
+
+- **Adds an extra Cognito API call to every sign-in** (~50–100 ms). This lands inside `/verify-link` too, since `VerifyMagicLink` calls `AdminRespondToAuthChallenge` synchronously.
+- **Federated coverage is unverified.** PostAuthentication is not reliably invoked for hosted-UI / third-party IdP sign-ins. Not yet relevant with `enabledIdps: []`, but verify against a real Google sign-in before relying on this for audit completeness.
+- **The trigger cannot deny a sign-in.** Authentication has already succeeded and the response is ignored. Use `PreAuthentication` to block.
 
 ---
 
@@ -184,3 +216,4 @@ This is a proof of concept. Before production:
 - **No account linking** — a user who registers with a password and later signs in with the same email via a social provider receives a second, separate account. Consider `AdminLinkProviderForUser` from a PreSignUp trigger.
 - **SMS is untested** — requires exiting the SNS SMS sandbox and, for US traffic, 10DLC or toll-free registration
 - **Threat protection is dormant** — available on the `plus` feature plan but not enabled
+- **Sign-in audit records live only in CloudWatch Logs** and inherit the log group's retention. For durable audit history, fan the PostAuthentication event out to EventBridge or a data store rather than relying on log retention.

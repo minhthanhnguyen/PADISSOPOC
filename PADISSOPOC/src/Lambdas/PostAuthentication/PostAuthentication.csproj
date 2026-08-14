@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AWSProjectType>Lambda</AWSProjectType>
+    <AssemblyName>PostAuthentication</AssemblyName>
+    <RootNamespace>Padisso.Cognito.PostAuthentication</RootNamespace>
+    <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
+    <PublishReadyToRun>true</PublishReadyToRun>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Amazon.Lambda.Core" Version="3.3.0" />
+    <PackageReference Include="Amazon.Lambda.Serialization.SystemTextJson" Version="3.0.0" />
+    <!-- Cognito only. Deliberately does not reference MagicLink.Aws, which would drag in
+         the DynamoDB, SES and SNS SDKs this trigger never calls. -->
+    <PackageReference Include="AWSSDK.CognitoIdentityProvider" Version="4.0.103.1" />
+  </ItemGroup>
+</Project>
