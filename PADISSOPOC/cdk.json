@@ -23,9 +23,13 @@
     "cognitoDomainCertArn": "arn:aws:acm:us-east-1:152885574093:certificate/0689de72-8211-407d-a33b-9c7e24182e40",
     "callbackUrls": [ "https://account.global-np.padi.com/callback" ],
     "logoutUrls": [ "https://account.global-np.padi.com/logout" ],
-    "magicLinkBaseUrl": "https://account.global-np.padi.com/verify",
-    "magicLinkEmailFrom": "padi@padi-mail.com",
+    "magicLinkBaseUrl": "http://localhost:5173/verify",
+    "magicLinkEmailFrom": "no-reply@padi.com",
     "magicLinkSmsSenderId": "",
+    "magicLinkAllowedOrigins": [
+      "http://localhost:5173",
+      "https://account.global-np.padi.com"
+    ],
     "@aws-cdk/aws-signer:signingProfileNamePassedToCfn": true,
     "@aws-cdk/aws-ecs-patterns:secGroupsDisablesImplicitOpenListener": true,
     "@aws-cdk/aws-lambda:recognizeLayerVersion": true,

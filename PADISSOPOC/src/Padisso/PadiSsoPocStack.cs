@@ -47,6 +47,9 @@ namespace Padisso
             var magicLinkBaseUrl    = (string)Node.TryGetContext("magicLinkBaseUrl");
             var magicLinkEmailFrom  = (string)Node.TryGetContext("magicLinkEmailFrom");
             var magicLinkSmsSenderId = (string)Node.TryGetContext("magicLinkSmsSenderId");
+            var magicLinkAllowedOrigins = ((object[])Node.TryGetContext("magicLinkAllowedOrigins")
+                    ?? System.Array.Empty<object>())
+                .Select(o => o.ToString()!).ToArray();
 
             // Token store for magic links — keyed by SHA-256 hash of the raw token
             var magicLinkTable = new Table(this, "MagicLinkTokens", new TableProps
@@ -407,13 +410,25 @@ namespace Padisso
                 Resources = new[] { UserPool.UserPoolArn },
             }));
 
+            // Browsers preflight these endpoints, so they need explicit CORS. Origins are
+            // configurable per environment — keep localhost out of anything non-development.
+            var magicLinkCors = new FunctionUrlCorsOptions
+            {
+                AllowedOrigins = magicLinkAllowedOrigins,
+                AllowedMethods = new[] { HttpMethod.POST },
+                AllowedHeaders = new[] { "content-type" },
+                MaxAge = Duration.Hours(1),
+            };
+
             var requestUrl = requestMagicLinkFn.AddFunctionUrl(new FunctionUrlOptions
             {
                 AuthType = FunctionUrlAuthType.NONE,
+                Cors = magicLinkCors,
             });
             var verifyUrl = verifyMagicLinkFn.AddFunctionUrl(new FunctionUrlOptions
             {
                 AuthType = FunctionUrlAuthType.NONE,
+                Cors = magicLinkCors,
             });
 
             new CfnOutput(this, "UserPoolId", new CfnOutputProps

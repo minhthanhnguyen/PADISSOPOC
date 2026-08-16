@@ -20,7 +20,8 @@ src/
     PostAuthentication/       Cognito trigger — audit log + last-login
     RequestMagicLink/         Lambda Function URL
     VerifyMagicLink/          Lambda Function URL
-publish-lambdas.ps1           Publishes all five Lambdas
+web/                          React reference client (Vite + TypeScript)
+publish-lambdas.ps1           Publishes all Lambda projects
 cdk.json                      Environment configuration (context block)
 ```
 
@@ -188,6 +189,67 @@ npx cdk diff
 ### Stack outputs
 
 `PadissoUserPoolId`, `PadissoUserPoolClientId`, `PadissoUserPoolDomain`, `RequestMagicLinkUrl`, `VerifyMagicLinkUrl`
+
+---
+
+## Web client
+
+A minimal React reference client lives in `web/` — Vite, TypeScript, and AWS Amplify v6.
+
+| Route | Purpose |
+|---|---|
+| `/signup` | Username, password, email, first name, last name |
+| `/confirm` | 6-digit email verification code; account is unconfirmed until entered |
+| `/login` | Username + password over SRP |
+| `/passwordless` | Choice-based `USER_AUTH` — email OTP, SMS OTP, or passkey |
+| `/magic-link` | Requests and redeems a magic link against the Function URLs |
+| `/` | ID and access tokens, decoded claims, passkey management; redirects to `/login` when signed out |
+
+### Running it
+
+Fill in the pool details:
+
+```bash
+cp web/.env.example web/.env.local
+```
+
+Read the values from the deployed stack:
+
+```bash
+aws cloudformation describe-stacks --stack-name PadiSsoPocStack --query "Stacks[0].Outputs" --output table
+```
+
+Then:
+
+```bash
+npm install --prefix web
+```
+
+```bash
+npm run dev --prefix web
+```
+
+### Notes
+
+- **Sign-in uses `USER_SRP_AUTH` explicitly.** The app client has `USER_PASSWORD_AUTH` disabled, so a client defaulting to plaintext password auth will fail. The password is never sent to Cognito directly.
+- **Email verification is enforced by the pool.** `AutoVerify` is on for email, so `signUp` returns a `CONFIRM_SIGN_UP` next step and Cognito emails a code. Sign-in fails until `confirmSignUp` succeeds. The login page detects an unconfirmed account and routes back to `/confirm`.
+- **Cognito's default email sender caps at 50 messages/day**, which covers these verification codes — the first thing to hit if you test signup repeatedly.
+- **No hosted UI involvement.** The client calls the Cognito API directly, so `callbackUrls` is not used. Add `http://localhost:5173` to `callbackUrls` in `cdk.json` before wiring up social sign-in through the hosted UI.
+
+### Passwordless testability
+
+Each factor has its own prerequisites, and only email OTP works against a local dev server as configured:
+
+| Factor | Status locally | Blocker |
+|---|---|---|
+| Email OTP | Works | None — subject to the 50/day default-sender cap |
+| SMS OTP | Blocked | Signup collects no `phone_number`, and SNS is in the SMS sandbox |
+| Passkey | Blocked | `passkeyRelyingPartyId` is `padi.com`; WebAuthn requires the RP ID to be a registrable suffix of the page origin, which `localhost` is not |
+| Magic link | Partial | Needs `RequestMagicLinkUrl` in `.env.local` and a verified SES sender |
+
+To exercise passkeys locally, either set `passkeyRelyingPartyId` to `localhost` in `cdk.json` and redeploy, or serve the app from a `*.padi.com` host. Changing the RP ID invalidates any passkeys already registered under the previous value.
+
+The magic-link email points at `magicLinkBaseUrl` (a production URL), not localhost, so `/magic-link` accepts the token pasted manually as well as via `?token=`.
 
 ---
 

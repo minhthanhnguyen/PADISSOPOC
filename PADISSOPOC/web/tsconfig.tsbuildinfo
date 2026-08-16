@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/auth-config.ts","./src/main.tsx","./src/components/passkeys.tsx","./src/pages/confirmemail.tsx","./src/pages/dashboard.tsx","./src/pages/login.tsx","./src/pages/magiclink.tsx","./src/pages/magiclinklanding.tsx","./src/pages/passwordlesslogin.tsx","./src/pages/signup.tsx"],"version":"5.9.3"}
