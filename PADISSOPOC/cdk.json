@@ -26,6 +26,8 @@
     "magicLinkBaseUrl": "http://localhost:5173/verify",
     "magicLinkEmailFrom": "no-reply@padi.com",
     "magicLinkSmsSenderId": "",
+    "messagingEmailUrl": "https://messaging-stage.global-np.padi.com/v1/email/transact",
+    "messagingTokenUrl": "https://api-stage.global-np.padi.com/auth/api/oauth2/token",
     "magicLinkAllowedOrigins": [
       "http://localhost:5173",
       "https://account.global-np.padi.com"

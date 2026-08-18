@@ -41,8 +41,7 @@ export default function App() {
   return (
     <div className="shell">
       <header>
-        <h1>PADI SSO</h1>
-        <p className="muted">Amazon Cognito reference client</p>
+        <h1>PADI SSO - Demo</h1>
       </header>
 
       <Routes>

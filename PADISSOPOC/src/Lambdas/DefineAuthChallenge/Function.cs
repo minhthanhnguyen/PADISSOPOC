@@ -3,7 +3,7 @@ using Amazon.Lambda.Core;
 
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
 
-namespace Padisso.MagicLink.DefineAuthChallenge;
+namespace Padi.Services.Authentication.MagicLink.DefineAuthChallenge;
 
 /// <summary>
 /// Cognito DefineAuthChallenge trigger. Decides which challenge to issue next.

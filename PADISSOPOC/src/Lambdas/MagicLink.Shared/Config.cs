@@ -1,4 +1,4 @@
-namespace Padisso.MagicLink.Shared;
+namespace Padi.Services.Authentication.MagicLink.Shared;
 
 /// <summary>Environment-variable backed configuration shared across the magic-link functions.</summary>
 public static class Config

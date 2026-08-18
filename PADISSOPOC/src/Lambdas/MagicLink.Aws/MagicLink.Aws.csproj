@@ -4,7 +4,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>MagicLink.Aws</AssemblyName>
-    <RootNamespace>Padisso.MagicLink.Aws</RootNamespace>
+    <RootNamespace>Padi.Services.Authentication.MagicLink.Aws</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="AWSSDK.DynamoDBv2" Version="4.0.103" />

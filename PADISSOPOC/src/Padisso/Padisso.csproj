@@ -5,6 +5,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <!-- Roll forward to future major versions of the netcoreapp as needed -->
     <RollForward>Major</RollForward>
+    <RootNamespace>Padi.Services.Authentication</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>

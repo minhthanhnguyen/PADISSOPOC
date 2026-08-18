@@ -5,11 +5,12 @@ using Amazon.CDK.AWS.CertificateManager;
 using Amazon.CDK.AWS.Cognito;
 using Amazon.CDK.AWS.DynamoDB;
 using Amazon.CDK.AWS.IAM;
+using Amazon.CDK.AWS.KMS;
 using Amazon.CDK.AWS.Lambda;
 using Amazon.CDK.AWS.SecretsManager;
 using Constructs;
 
-namespace Padisso
+namespace Padi.Services.Authentication
 {
     public class PadiSsoPocStack : Stack
     {
@@ -47,6 +48,8 @@ namespace Padisso
             var magicLinkBaseUrl    = (string)Node.TryGetContext("magicLinkBaseUrl");
             var magicLinkEmailFrom  = (string)Node.TryGetContext("magicLinkEmailFrom");
             var magicLinkSmsSenderId = (string)Node.TryGetContext("magicLinkSmsSenderId");
+            var messagingEmailUrl   = (string)Node.TryGetContext("messagingEmailUrl");
+            var messagingTokenUrl   = (string)Node.TryGetContext("messagingTokenUrl");
             var magicLinkAllowedOrigins = ((object[])Node.TryGetContext("magicLinkAllowedOrigins")
                     ?? System.Array.Empty<object>())
                 .Select(o => o.ToString()!).ToArray();
@@ -85,7 +88,7 @@ namespace Padisso
             {
                 FunctionName = "padi-sso-poc-define-auth",
                 Runtime = Runtime.DOTNET_10,
-                Handler = "DefineAuthChallenge::Padisso.MagicLink.DefineAuthChallenge.Function::Handler",
+                Handler = "DefineAuthChallenge::Padi.Services.Authentication.MagicLink.DefineAuthChallenge.Function::Handler",
                 Code = LambdaCode("DefineAuthChallenge"),
                 Timeout = Duration.Seconds(5),
                 MemorySize = 256,
@@ -95,17 +98,87 @@ namespace Padisso
             {
                 FunctionName = "padi-sso-poc-create-auth",
                 Runtime = Runtime.DOTNET_10,
-                Handler = "CreateAuthChallenge::Padisso.MagicLink.CreateAuthChallenge.Function::Handler",
+                Handler = "CreateAuthChallenge::Padi.Services.Authentication.MagicLink.CreateAuthChallenge.Function::Handler",
                 Code = LambdaCode("CreateAuthChallenge"),
                 Timeout = Duration.Seconds(5),
                 MemorySize = 256,
             });
 
+            // Cognito encrypts one-time codes with this key before handing them to the
+            // custom sender trigger; the trigger decrypts them via the AWS Encryption SDK.
+            var codeKey = new Key(this, "CognitoCodeKey", new KeyProps
+            {
+                Alias = "alias/padi-sso-poc-cognito-codes",
+                Description = "Encrypts Cognito one-time codes for the custom sender triggers",
+                EnableKeyRotation = true,
+                RemovalPolicy = RemovalPolicy.DESTROY,
+            });
+            codeKey.GrantEncrypt(new ServicePrincipal("cognito-idp.amazonaws.com"));
+
+            // Credentials live under this SSM path and are loaded by the configuration
+            // provider at runtime, so they never appear in GetFunctionConfiguration output.
+            // Parameter names map onto configuration keys: the path prefix is stripped, so
+            // /padi/services/authentication/Messaging/ClientId becomes "Messaging:ClientId",
+            // the same key an env var would produce.
+            const string configParameterPath = "/padi/services/authentication";
+
+            var messagingEnv = new Dictionary<string, string>
+            {
+                ["CONFIG_PARAMETER_PATH"]   = configParameterPath,
+                ["Messaging__EmailUrl"]     = messagingEmailUrl,
+                ["Messaging__TokenUrl"]     = messagingTokenUrl,
+                ["Messaging__FromAddress"]  = magicLinkEmailFrom,
+                ["KEY_ARN"]                 = codeKey.KeyArn,
+            };
+
+            var customEmailSenderFn = new Function(this, "CustomEmailSenderFn", new FunctionProps
+            {
+                FunctionName = "padi-sso-poc-custom-email-sender",
+                Runtime = Runtime.DOTNET_10,
+                Handler = "CustomEmailSender::Padi.Services.Authentication.Cognito.CustomEmailSender.Function::Handler",
+                Code = LambdaCode("CustomEmailSender"),
+                Timeout = Duration.Seconds(15),
+                MemorySize = 512,
+                Environment = messagingEnv,
+            });
+            codeKey.GrantDecrypt(customEmailSenderFn);
+
+            // The configuration provider enumerates the path, so GetParametersByPath is
+            // required in addition to the single-parameter reads.
+            customEmailSenderFn.AddToRolePolicy(new PolicyStatement(new PolicyStatementProps
+            {
+                Actions = new[] { "ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath" },
+                Resources = new[]
+                {
+                    FormatArn(new ArnComponents
+                    {
+                        Service = "ssm",
+                        Resource = "parameter",
+                        ResourceName = $"{configParameterPath.TrimStart('/')}/*",
+                    }),
+                },
+            }));
+
+            // SecureString parameters are decrypted with the AWS-managed SSM key. Scoped
+            // by ViaService so this grant cannot be used against other KMS keys directly.
+            customEmailSenderFn.AddToRolePolicy(new PolicyStatement(new PolicyStatementProps
+            {
+                Actions = new[] { "kms:Decrypt" },
+                Resources = new[] { "*" },
+                Conditions = new Dictionary<string, object>
+                {
+                    ["StringEquals"] = new Dictionary<string, string>
+                    {
+                        ["kms:ViaService"] = $"ssm.{Region}.amazonaws.com",
+                    },
+                },
+            }));
+
             var postAuthFn = new Function(this, "PostAuthenticationFn", new FunctionProps
             {
                 FunctionName = "padi-sso-poc-post-auth",
                 Runtime = Runtime.DOTNET_10,
-                Handler = "PostAuthentication::Padisso.Cognito.PostAuthentication.Function::Handler",
+                Handler = "PostAuthentication::Padi.Services.Authentication.Cognito.PostAuthentication.Function::Handler",
                 Code = LambdaCode("PostAuthentication"),
                 Timeout = Duration.Seconds(5),
                 MemorySize = 256,
@@ -115,7 +188,7 @@ namespace Padisso
             {
                 FunctionName = "padi-sso-poc-verify-auth",
                 Runtime = Runtime.DOTNET_10,
-                Handler = "VerifyAuthChallenge::Padisso.MagicLink.VerifyAuthChallenge.Function::Handler",
+                Handler = "VerifyAuthChallenge::Padi.Services.Authentication.MagicLink.VerifyAuthChallenge.Function::Handler",
                 Code = LambdaCode("VerifyAuthChallenge"),
                 Timeout = Duration.Seconds(5),
                 MemorySize = 256,
@@ -175,14 +248,21 @@ namespace Padisso
                     RequireSymbols = false,
                 },
                 AccountRecovery = AccountRecovery.EMAIL_AND_PHONE_WITHOUT_MFA,
-                RemovalPolicy = RemovalPolicy.DESTROY,
+                // RETAIN so a CloudFormation replacement orphans the pool rather than
+                // deleting every user with it. `cdk destroy` will no longer remove it.
+                RemovalPolicy = RemovalPolicy.RETAIN,
                 LambdaTriggers = new UserPoolTriggers
                 {
                     DefineAuthChallenge = defineFn,
                     CreateAuthChallenge = createFn,
                     VerifyAuthChallengeResponse = verifyFn,
                     PostAuthentication = postAuthFn,
+                    // Takes over ALL Cognito-originated email, including passwordless
+                    // email OTP (CustomEmailSender_Authentication). Cognito sends nothing
+                    // itself once this is set — there is no fallback if the trigger fails.
+                    CustomEmailSender = customEmailSenderFn,
                 },
+                CustomSenderKmsKey = codeKey,
             });
 
             // Attached as a standalone Policy rather than via postAuthFn.AddToRolePolicy().
@@ -362,7 +442,7 @@ namespace Padisso
             {
                 FunctionName = "padi-sso-poc-request-magic-link",
                 Runtime = Runtime.DOTNET_10,
-                Handler = "RequestMagicLink::Padisso.MagicLink.RequestMagicLink.Function::Handler",
+                Handler = "RequestMagicLink::Padi.Services.Authentication.MagicLink.RequestMagicLink.Function::Handler",
                 Code = LambdaCode("RequestMagicLink"),
                 Timeout = Duration.Seconds(10),
                 MemorySize = 512,
@@ -373,7 +453,7 @@ namespace Padisso
             {
                 FunctionName = "padi-sso-poc-verify-magic-link",
                 Runtime = Runtime.DOTNET_10,
-                Handler = "VerifyMagicLink::Padisso.MagicLink.VerifyMagicLink.Function::Handler",
+                Handler = "VerifyMagicLink::Padi.Services.Authentication.MagicLink.VerifyMagicLink.Function::Handler",
                 Code = LambdaCode("VerifyMagicLink"),
                 Timeout = Duration.Seconds(10),
                 MemorySize = 512,

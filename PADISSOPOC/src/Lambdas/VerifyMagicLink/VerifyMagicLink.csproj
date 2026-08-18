@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AWSProjectType>Lambda</AWSProjectType>
     <AssemblyName>VerifyMagicLink</AssemblyName>
-    <RootNamespace>Padisso.MagicLink.VerifyMagicLink</RootNamespace>
+    <RootNamespace>Padi.Services.Authentication.MagicLink.VerifyMagicLink</RootNamespace>
     <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
     <PublishReadyToRun>true</PublishReadyToRun>
   </PropertyGroup>

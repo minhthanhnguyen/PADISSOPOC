@@ -4,12 +4,12 @@ using Amazon.CognitoIdentityProvider.Model;
 using Amazon.DynamoDBv2;
 using Amazon.DynamoDBv2.Model;
 using Amazon.Lambda.Core;
-using Padisso.MagicLink.Aws;
-using Padisso.MagicLink.Shared;
+using Padi.Services.Authentication.MagicLink.Aws;
+using Padi.Services.Authentication.MagicLink.Shared;
 
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
 
-namespace Padisso.MagicLink.VerifyMagicLink;
+namespace Padi.Services.Authentication.MagicLink.VerifyMagicLink;
 
 /// <summary>
 /// Function URL: POST { "token": "abc123..." }

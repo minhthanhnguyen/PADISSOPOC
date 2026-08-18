@@ -1,4 +1,4 @@
-namespace Padisso.MagicLink.Shared;
+namespace Padi.Services.Authentication.MagicLink.Shared;
 
 public enum DeliveryChannel
 {

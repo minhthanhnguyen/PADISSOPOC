@@ -1,10 +1,10 @@
 using System.Text.Json.Nodes;
 using Amazon.Lambda.Core;
-using Padisso.MagicLink.Shared;
+using Padi.Services.Authentication.MagicLink.Shared;
 
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
 
-namespace Padisso.MagicLink.VerifyAuthChallenge;
+namespace Padi.Services.Authentication.MagicLink.VerifyAuthChallenge;
 
 /// <summary>
 /// Cognito VerifyAuthChallengeResponse trigger. Confirms the caller is VerifyMagicLink

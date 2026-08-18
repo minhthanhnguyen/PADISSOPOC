@@ -3,7 +3,7 @@ using Amazon.Lambda.Core;
 
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
 
-namespace Padisso.MagicLink.CreateAuthChallenge;
+namespace Padi.Services.Authentication.MagicLink.CreateAuthChallenge;
 
 /// <summary>
 /// Cognito CreateAuthChallenge trigger. Rubber stamp — the magic-link email is sent

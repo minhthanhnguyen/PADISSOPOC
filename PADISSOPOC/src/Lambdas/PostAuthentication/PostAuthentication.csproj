@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AWSProjectType>Lambda</AWSProjectType>
     <AssemblyName>PostAuthentication</AssemblyName>
-    <RootNamespace>Padisso.Cognito.PostAuthentication</RootNamespace>
+    <RootNamespace>Padi.Services.Authentication.Cognito.PostAuthentication</RootNamespace>
     <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
     <PublishReadyToRun>true</PublishReadyToRun>
   </PropertyGroup>

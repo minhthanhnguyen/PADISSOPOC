@@ -2,12 +2,12 @@ using System.Text.Json.Nodes;
 using Amazon.CognitoIdentityProvider.Model;
 using Amazon.DynamoDBv2.Model;
 using Amazon.Lambda.Core;
-using Padisso.MagicLink.Aws;
-using Padisso.MagicLink.Shared;
+using Padi.Services.Authentication.MagicLink.Aws;
+using Padi.Services.Authentication.MagicLink.Shared;
 
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
 
-namespace Padisso.MagicLink.RequestMagicLink;
+namespace Padi.Services.Authentication.MagicLink.RequestMagicLink;
 
 /// <summary>
 /// Function URL: POST { "username": "alice", "channel": "email" | "sms" }

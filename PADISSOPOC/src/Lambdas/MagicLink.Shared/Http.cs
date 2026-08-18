@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace Padisso.MagicLink.Shared;
+namespace Padi.Services.Authentication.MagicLink.Shared;
 
 /// <summary>Lambda Function URL request/response helpers.</summary>
 public static class Http

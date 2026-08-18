@@ -6,7 +6,7 @@ using Amazon.Lambda.Core;
 
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
 
-namespace Padisso.Cognito.PostAuthentication;
+namespace Padi.Services.Authentication.Cognito.PostAuthentication;
 
 /// <summary>
 /// Cognito PostAuthentication trigger. Emits a structured audit record and stamps

@@ -1,27 +1,21 @@
+/* Committed light theme. `color-scheme: light` keeps native form controls and
+   scrollbars light even when the OS prefers dark, so the palette below is the
+   single source of truth and there is no dark override. */
 :root {
-  --bg: #f6f7f9;
-  --fg: #16191d;
-  --muted: #6b7280;
-  --line: #d8dce2;
+  --bg: #f4f6f8;
   --card: #ffffff;
-  --accent: #0b5cad;
-  --error: #b42318;
-  --notice: #067647;
+  --fg: #1d2430;
+  --muted: #667385;
+  --line: #e2e6ec;
+  --line-strong: #cdd4de;
+  --field: #fafbfc;
+  --accent: #1565c0;
+  --accent-hover: #10508f;
+  --error: #b3261e;
+  --error-bg: #fdf3f2;
+  --notice: #0f7a4d;
+  --notice-bg: #f1faf5;
   color-scheme: light;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #14171a;
-    --fg: #e8eaed;
-    --muted: #9aa1ab;
-    --line: #2c3138;
-    --card: #1c2025;
-    --accent: #6aa9e9;
-    --error: #f97066;
-    --notice: #47cd89;
-    color-scheme: dark;
-  }
 }
 
 * { box-sizing: border-box; }
@@ -30,36 +24,44 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  font: 15px/1.55 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 .shell {
   max-width: 46rem;
   margin: 0 auto;
-  padding: 2rem 1rem 4rem;
+  padding: 2.5rem 1rem 4rem;
 }
 
-header { margin-bottom: 1.5rem; }
-header h1 { margin: 0; font-size: 1.35rem; letter-spacing: -0.01em; }
+header { margin-bottom: 1.75rem; }
+header h1 {
+  margin: 0;
+  font-size: 1.3rem;
+  letter-spacing: -0.015em;
+  color: var(--fg);
+}
 
-h2 { margin: 0 0 1rem; font-size: 1.1rem; }
+h2 { margin: 0 0 0.35rem; font-size: 1.05rem; letter-spacing: -0.01em; }
 h3 { margin: 0; font-size: 0.85rem; font-weight: 600; }
 
 .card {
   background: var(--card);
   border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 1.5rem;
+  border-radius: 12px;
+  padding: 1.6rem;
   max-width: 26rem;
+  box-shadow: 0 1px 2px rgb(29 36 48 / 4%), 0 4px 12px rgb(29 36 48 / 4%);
 }
 .card.wide { max-width: none; }
+.card > h2 + p.muted { margin-top: 0; margin-bottom: 1.25rem; }
 
-form { display: flex; flex-direction: column; gap: 0.9rem; }
+form { display: flex; flex-direction: column; gap: 0.95rem; }
 
 label {
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
+  gap: 0.35rem;
   font-size: 0.85rem;
   font-weight: 500;
 }
@@ -70,49 +72,80 @@ label {
 input {
   font: inherit;
   padding: 0.5rem 0.65rem;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--field);
   color: var(--fg);
+  transition: border-color 120ms, background 120ms;
 }
-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+input:hover { border-color: var(--muted); }
+input:focus {
+  background: var(--card);
+  border-color: var(--accent);
+  outline: 2px solid rgb(21 101 192 / 18%);
+  outline-offset: 0;
+}
+input::placeholder { color: #a3adbb; }
 
 button {
   font: inherit;
   font-weight: 500;
   padding: 0.55rem 1rem;
   border: 0;
-  border-radius: 6px;
+  border-radius: 7px;
   background: var(--accent);
   color: #fff;
   cursor: pointer;
+  transition: background 120ms;
 }
-button:disabled { opacity: 0.55; cursor: default; }
+button:hover:not(:disabled) { background: var(--accent-hover); }
+button:disabled { opacity: 0.5; cursor: default; }
 
 button.linkish {
   background: none;
   color: var(--accent);
   padding: 0;
-  text-decoration: underline;
+  font-weight: 500;
   font-size: 0.85rem;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
+button.linkish:hover:not(:disabled) { background: none; color: var(--accent-hover); }
 
-a { color: var(--accent); }
+a { color: var(--accent); text-underline-offset: 2px; }
+a:hover { color: var(--accent-hover); }
 
 .muted { color: var(--muted); font-size: 0.85rem; font-weight: 400; }
-.error { color: var(--error); font-size: 0.85rem; margin: 0; }
-.notice { color: var(--notice); font-size: 0.85rem; margin: 0 0 0.5rem; }
+
+.error,
+.notice {
+  font-size: 0.85rem;
+  margin: 0;
+  padding: 0.5rem 0.7rem;
+  border-radius: 7px;
+  border: 1px solid;
+}
+.error { color: var(--error); background: var(--error-bg); border-color: #f3d6d3; }
+.notice { color: var(--notice); background: var(--notice-bg); border-color: #cdead9; }
 
 fieldset {
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 0.65rem 0.8rem 0.8rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  padding: 0.7rem 0.85rem 0.85rem;
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
+  gap: 0.5rem;
+  background: var(--field);
 }
-legend { font-size: 0.8rem; font-weight: 500; color: var(--muted); padding: 0 0.3rem; }
+legend {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 0 0.35rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
 
 label.radio {
   flex-direction: row;
@@ -120,7 +153,7 @@ label.radio {
   gap: 0.5rem;
   font-weight: 400;
 }
-label.radio input { width: auto; }
+label.radio input { width: auto; accent-color: var(--accent); }
 
 code {
   font-size: 0.85em;
@@ -130,22 +163,23 @@ code {
   padding: 0.05rem 0.3rem;
 }
 
-.token { margin-top: 1.25rem; }
+.token { margin-top: 1.4rem; }
 .token-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  margin-bottom: 0.4rem;
+  margin-bottom: 0.45rem;
 }
 
 pre {
   margin: 0;
-  padding: 0.75rem;
-  background: var(--bg);
+  padding: 0.8rem;
+  background: var(--field);
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 7px;
   font-size: 0.75rem;
+  color: #35404f;
   overflow-x: auto;
   word-break: break-all;
   white-space: pre-wrap;
@@ -160,13 +194,16 @@ table.claims {
 table.claims th,
 table.claims td {
   text-align: left;
-  padding: 0.4rem 0.5rem;
+  padding: 0.45rem 0.5rem;
   border-bottom: 1px solid var(--line);
   vertical-align: top;
 }
 table.claims th { width: 11rem; font-weight: 500; color: var(--muted); }
 table.claims td { word-break: break-all; }
+table.claims tr:last-child th,
+table.claims tr:last-child td { border-bottom: 0; }
 
-details { margin-top: 1.25rem; }
+details { margin-top: 1.4rem; }
 summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
+summary:hover { color: var(--fg); }
 details pre { margin-top: 0.5rem; }

@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AWSProjectType>Lambda</AWSProjectType>
     <AssemblyName>VerifyAuthChallenge</AssemblyName>
-    <RootNamespace>Padisso.MagicLink.VerifyAuthChallenge</RootNamespace>
+    <RootNamespace>Padi.Services.Authentication.MagicLink.VerifyAuthChallenge</RootNamespace>
     <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
     <PublishReadyToRun>true</PublishReadyToRun>
   </PropertyGroup>

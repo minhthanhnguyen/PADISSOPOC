@@ -1,7 +1,7 @@
 using Amazon.SimpleNotificationService.Model;
-using Padisso.MagicLink.Shared;
+using Padi.Services.Authentication.MagicLink.Shared;
 
-namespace Padisso.MagicLink.Aws;
+namespace Padi.Services.Authentication.MagicLink.Aws;
 
 /// <summary>
 /// Delivers magic links over SMS via SNS.

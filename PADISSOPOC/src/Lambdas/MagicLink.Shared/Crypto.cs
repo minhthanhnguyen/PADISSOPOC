@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 
-namespace Padisso.MagicLink.Shared;
+namespace Padi.Services.Authentication.MagicLink.Shared;
 
 public static class Crypto
 {

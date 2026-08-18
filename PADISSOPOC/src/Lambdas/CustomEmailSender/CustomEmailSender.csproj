@@ -4,13 +4,19 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AWSProjectType>Lambda</AWSProjectType>
-    <AssemblyName>DefineAuthChallenge</AssemblyName>
-    <RootNamespace>Padi.Services.Authentication.MagicLink.DefineAuthChallenge</RootNamespace>
+    <AssemblyName>CustomEmailSender</AssemblyName>
+    <RootNamespace>Padi.Services.Authentication.Cognito.CustomEmailSender</RootNamespace>
     <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
     <PublishReadyToRun>true</PublishReadyToRun>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Amazon.Lambda.Core" Version="3.3.0" />
     <PackageReference Include="Amazon.Lambda.Serialization.SystemTextJson" Version="3.0.0" />
+    <!-- Cognito encrypts codes with the AWS Encryption SDK envelope format,
+         so plain kms:Decrypt is not sufficient. -->
+    <PackageReference Include="AWS.Cryptography.EncryptionSDK" Version="5.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Messaging.Http\Messaging.Http.csproj" />
   </ItemGroup>
 </Project>

@@ -1,6 +1,6 @@
-using Padisso.MagicLink.Shared;
+using Padi.Services.Authentication.MagicLink.Shared;
 
-namespace Padisso.MagicLink.Aws;
+namespace Padi.Services.Authentication.MagicLink.Aws;
 
 /// <summary>
 /// Maps a caller-supplied channel name to an implementation.

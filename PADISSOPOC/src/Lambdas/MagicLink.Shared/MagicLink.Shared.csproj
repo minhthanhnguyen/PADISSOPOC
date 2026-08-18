@@ -4,6 +4,6 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>MagicLink.Shared</AssemblyName>
-    <RootNamespace>Padisso.MagicLink.Shared</RootNamespace>
+    <RootNamespace>Padi.Services.Authentication.MagicLink.Shared</RootNamespace>
   </PropertyGroup>
 </Project>

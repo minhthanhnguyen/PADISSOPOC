@@ -3,7 +3,7 @@ using Amazon.DynamoDBv2;
 using Amazon.SimpleEmailV2;
 using Amazon.SimpleNotificationService;
 
-namespace Padisso.MagicLink.Aws;
+namespace Padi.Services.Authentication.MagicLink.Aws;
 
 /// <summary>
 /// Lazily-initialised AWS clients, reused across warm invocations. Lazy rather than
