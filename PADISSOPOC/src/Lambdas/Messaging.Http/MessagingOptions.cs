@@ -20,4 +20,11 @@ public sealed class MessagingOptions
     public string? Scope { get; set; }
     public string? SmsUrl { get; set; }
     public string? FromAddress { get; set; }
+
+    /// <summary>
+    /// Messaging-service template ids, keyed by Cognito trigger source with the
+    /// <c>CustomEmailSender_</c> prefix removed — e.g. <c>Messaging:Definitions:SignUp</c>.
+    /// Configured per environment so template changes need no redeploy.
+    /// </summary>
+    public Dictionary<string, string> Definitions { get; set; } = new();
 }

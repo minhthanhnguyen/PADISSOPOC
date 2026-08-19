@@ -90,7 +90,7 @@ namespace Padi.Services.Authentication
                 Runtime = Runtime.DOTNET_10,
                 Handler = "DefineAuthChallenge::Padi.Services.Authentication.MagicLink.DefineAuthChallenge.Function::Handler",
                 Code = LambdaCode("DefineAuthChallenge"),
-                Timeout = Duration.Seconds(5),
+                Timeout = Duration.Seconds(30),
                 MemorySize = 256,
             });
 
@@ -100,7 +100,7 @@ namespace Padi.Services.Authentication
                 Runtime = Runtime.DOTNET_10,
                 Handler = "CreateAuthChallenge::Padi.Services.Authentication.MagicLink.CreateAuthChallenge.Function::Handler",
                 Code = LambdaCode("CreateAuthChallenge"),
-                Timeout = Duration.Seconds(5),
+                Timeout = Duration.Seconds(30),
                 MemorySize = 256,
             });
 
@@ -131,13 +131,18 @@ namespace Padi.Services.Authentication
                 ["KEY_ARN"]                 = codeKey.KeyArn,
             };
 
+            // Template ids are deliberately NOT set here. They live in SSM under
+            // <configParameterPath>/Messaging/Definitions/<TriggerSource>, and because
+            // LambdaHost applies environment variables after SSM, an env var of the same
+            // name would silently shadow the parameter.
+
             var customEmailSenderFn = new Function(this, "CustomEmailSenderFn", new FunctionProps
             {
                 FunctionName = "padi-sso-poc-custom-email-sender",
                 Runtime = Runtime.DOTNET_10,
                 Handler = "CustomEmailSender::Padi.Services.Authentication.Cognito.CustomEmailSender.Function::Handler",
                 Code = LambdaCode("CustomEmailSender"),
-                Timeout = Duration.Seconds(15),
+                Timeout = Duration.Seconds(30),
                 MemorySize = 512,
                 Environment = messagingEnv,
             });
@@ -145,11 +150,22 @@ namespace Padi.Services.Authentication
 
             // The configuration provider enumerates the path, so GetParametersByPath is
             // required in addition to the single-parameter reads.
+            //
+            // Two ARNs are needed, not one: GetParametersByPath authorizes against the
+            // path *node* (no trailing wildcard), while GetParameter authorizes against
+            // the individual parameters beneath it. Granting only ".../*" fails the
+            // enumeration call.
             customEmailSenderFn.AddToRolePolicy(new PolicyStatement(new PolicyStatementProps
             {
                 Actions = new[] { "ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath" },
                 Resources = new[]
                 {
+                    FormatArn(new ArnComponents
+                    {
+                        Service = "ssm",
+                        Resource = "parameter",
+                        ResourceName = configParameterPath.TrimStart('/'),
+                    }),
                     FormatArn(new ArnComponents
                     {
                         Service = "ssm",
@@ -180,7 +196,7 @@ namespace Padi.Services.Authentication
                 Runtime = Runtime.DOTNET_10,
                 Handler = "PostAuthentication::Padi.Services.Authentication.Cognito.PostAuthentication.Function::Handler",
                 Code = LambdaCode("PostAuthentication"),
-                Timeout = Duration.Seconds(5),
+                Timeout = Duration.Seconds(30),
                 MemorySize = 256,
             });
 
@@ -190,7 +206,7 @@ namespace Padi.Services.Authentication
                 Runtime = Runtime.DOTNET_10,
                 Handler = "VerifyAuthChallenge::Padi.Services.Authentication.MagicLink.VerifyAuthChallenge.Function::Handler",
                 Code = LambdaCode("VerifyAuthChallenge"),
-                Timeout = Duration.Seconds(5),
+                Timeout = Duration.Seconds(30),
                 MemorySize = 256,
                 Environment = new Dictionary<string, string>
                 {
@@ -444,7 +460,7 @@ namespace Padi.Services.Authentication
                 Runtime = Runtime.DOTNET_10,
                 Handler = "RequestMagicLink::Padi.Services.Authentication.MagicLink.RequestMagicLink.Function::Handler",
                 Code = LambdaCode("RequestMagicLink"),
-                Timeout = Duration.Seconds(10),
+                Timeout = Duration.Seconds(30),
                 MemorySize = 512,
                 Environment = magicLinkEnv,
             });
@@ -455,7 +471,7 @@ namespace Padi.Services.Authentication
                 Runtime = Runtime.DOTNET_10,
                 Handler = "VerifyMagicLink::Padi.Services.Authentication.MagicLink.VerifyMagicLink.Function::Handler",
                 Code = LambdaCode("VerifyMagicLink"),
-                Timeout = Duration.Seconds(10),
+                Timeout = Duration.Seconds(30),
                 MemorySize = 512,
                 Environment = magicLinkEnv,
             });

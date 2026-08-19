@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Amazon.Lambda.Core;
+using Microsoft.Extensions.Options;
 using Padi.Services.Authentication.Messaging.Http;
 
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
@@ -15,9 +16,9 @@ namespace Padi.Services.Authentication.Cognito.CustomEmailSender;
 /// </summary>
 public static class Function
 {
-    // Resolved from the container built once per execution environment. Configuration
-    // behind it comes from SSM Parameter Store and environment variables alike.
     private static MessagingClient Messaging => LambdaHost.Resolve<MessagingClient>();
+    private static MessagingOptions Options =>
+        LambdaHost.Resolve<IOptionsMonitor<MessagingOptions>>().CurrentValue;
 
     public static async Task<JsonObject> Handler(JsonObject evt, ILambdaContext ctx)
     {
@@ -28,37 +29,44 @@ public static class Function
         var email = attrs?["email"]?.GetValue<string>();
         if (string.IsNullOrEmpty(email))
         {
-            // Nothing to deliver to. Log and return rather than fail the whole operation.
             ctx.Logger.LogWarning($"{triggerSource}: user has no email attribute; skipping.");
+            return evt;
+        }
+
+        var definitionName = Templates.DefinitionKeyFor(triggerSource);
+        if (definitionName is null ||
+            !Options.Definitions.TryGetValue(definitionName, out var definitionKey) ||
+            string.IsNullOrWhiteSpace(definitionKey))
+        {
+            // Unmapped trigger sources are skipped rather than failed — an unconfigured
+            // notification should not block the underlying Cognito operation.
+            ctx.Logger.LogWarning(
+                $"No Messaging:Definitions entry for '{definitionName ?? triggerSource}'; no message sent.");
             return evt;
         }
 
         var encrypted = request?["code"]?.GetValue<string>();
         var code = string.IsNullOrEmpty(encrypted) ? null : CodeDecryptor.Decrypt(encrypted);
 
-        var template = Templates.For(triggerSource, code, attrs);
-        if (template is null)
-        {
-            ctx.Logger.LogWarning($"Unhandled triggerSource '{triggerSource}'; no message sent.");
-            return evt;
-        }
-
-        var metadata = request?["clientMetadata"]?.AsObject()?
+        var clientMetadata = request?["clientMetadata"]?.AsObject()?
             .Where(kv => kv.Value is not null)
             .ToDictionary(kv => kv.Key, kv => kv.Value!.ToString());
 
-        await Messaging.SendEmailAsync(new EmailMessage
+        await Messaging.SendEmailAsync(new EmailProxyRequest
         {
-            To = email,
-            Subject = template.Subject,
-            HtmlBody = template.Html,
-            TextBody = template.Text,
-            Metadata = metadata,
+            // Keyed by email address to match the messaging service's contact model.
+            // Note this makes the contact identity move if a user changes their email;
+            // Cognito's sub would be stable across that.
+            ContactKey = email,
+            DefinitionKey = definitionKey,
+            RecipientEmail = email,
+            Attributes = Templates.AttributesFor(triggerSource, code, email, attrs, clientMetadata),
         });
 
         // Never log the code itself.
         ctx.Logger.LogInformation(
-            $"{{\"event\":\"CognitoEmailSent\",\"triggerSource\":\"{triggerSource}\",\"requestId\":\"{ctx.AwsRequestId}\"}}");
+            $"{{\"event\":\"CognitoEmailSent\",\"triggerSource\":\"{triggerSource}\"," +
+            $"\"definitionKey\":\"{definitionKey}\",\"requestId\":\"{ctx.AwsRequestId}\"}}");
 
         return evt;
     }

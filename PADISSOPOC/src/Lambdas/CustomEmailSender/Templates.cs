@@ -2,71 +2,50 @@ using System.Text.Json.Nodes;
 
 namespace Padi.Services.Authentication.Cognito.CustomEmailSender;
 
-public sealed record EmailTemplate(string Subject, string Html, string Text);
-
 /// <summary>
-/// Maps a Cognito trigger source to message content. Kept deliberately plain — if the
-/// messaging service owns templates, replace these bodies with a template id and pass
-/// the code through <c>Metadata</c> instead.
+/// Builds the substitution values sent to the messaging service.
+///
+/// Subjects and bodies live in the messaging service's template definitions, so this
+/// only assembles the attributes those templates reference. The definition id itself
+/// comes from configuration (<c>Messaging:Definitions:*</c>), keyed by trigger source.
 /// </summary>
 public static class Templates
 {
-    public static EmailTemplate? For(string triggerSource, string? code, JsonObject? attrs)
+    /// <summary>Strips the <c>CustomEmailSender_</c> prefix to give the configuration key.</summary>
+    public static string? DefinitionKeyFor(string triggerSource) =>
+        triggerSource.StartsWith("CustomEmailSender_", StringComparison.Ordinal)
+            ? triggerSource["CustomEmailSender_".Length..]
+            : null;
+
+    public static Dictionary<string, object?> AttributesFor(
+        string triggerSource,
+        string? code,
+        string email,
+        JsonObject? userAttributes,
+        IReadOnlyDictionary<string, string>? clientMetadata)
     {
-        var name = attrs?["given_name"]?.GetValue<string>();
-        var hello = string.IsNullOrWhiteSpace(name) ? "Hello," : $"Hi {name},";
-
-        return triggerSource switch
-        {
-            "CustomEmailSender_SignUp" => Code(
-                "Verify your PADI account",
-                $"{hello} use this code to finish setting up your account:",
-                code),
-
-            "CustomEmailSender_ResendCode" => Code(
-                "Your PADI verification code",
-                $"{hello} here is a new verification code:",
-                code),
-
-            // Passwordless email OTP and MFA both arrive here.
-            "CustomEmailSender_Authentication" => Code(
-                "Your PADI sign-in code",
-                $"{hello} use this code to sign in:",
-                code),
-
-            "CustomEmailSender_ForgotPassword" => Code(
-                "Reset your PADI password",
-                $"{hello} use this code to reset your password:",
-                code),
-
-            "CustomEmailSender_UpdateUserAttribute" or
-            "CustomEmailSender_VerifyUserAttribute" => Code(
-                "Verify your details",
-                $"{hello} use this code to confirm the change to your account:",
-                code),
-
-            "CustomEmailSender_AdminCreateUser" => Code(
-                "Your PADI temporary password",
-                $"{hello} an account has been created for you. Sign in with this temporary password:",
-                code),
-
-            "CustomEmailSender_AccountTakeOverNotification" => new EmailTemplate(
-                "Unusual activity on your PADI account",
-                $"<p>{hello}</p><p>We noticed a sign-in attempt that looked unusual. " +
-                "If this was not you, please reset your password.</p>",
-                $"{hello}\n\nWe noticed a sign-in attempt that looked unusual. " +
-                "If this was not you, please reset your password."),
-
-            _ => null,
+        var attrs = new Dictionary<string, object?>
+        {            
+            ["SubscriberKey"]       = email,
+            ["EmailAddress"]        = email,
+            ["VerificationCode"]    = code,
+            ["LanguageCode"]        = Attr(userAttributes, "custom:language") ?? "en-US",
+            ["FirstName"]           = Attr(userAttributes, "given_name"),
+            ["META_COUNTRY_CODE"]   = "US",
         };
+
+        // Anything the client passed through ClientMetadata (locale, brand, campaign)
+        // is forwarded so templates can vary on it without a code change.
+        if (clientMetadata is not null)
+        {
+            foreach (var (k, v) in clientMetadata)
+            {
+                attrs[k] = v;
+            }
+        }
+
+        return attrs;
     }
 
-    private static EmailTemplate? Code(string subject, string lead, string? code)
-    {
-        if (string.IsNullOrEmpty(code)) return null;
-        return new EmailTemplate(
-            subject,
-            $"<p>{lead}</p><p style=\"font-size:24px;font-weight:600;letter-spacing:3px\">{code}</p>",
-            $"{lead}\n\n{code}");
-    }
+    private static string? Attr(JsonObject? attrs, string name) => attrs?[name]?.GetValue<string>();
 }

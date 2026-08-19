@@ -31,19 +31,17 @@ public sealed class BearerTokenProvider(HttpClient http, IOptionsMonitor<Messagi
             // picked up on the next token refresh without a redeploy.
             var o = options.CurrentValue;
 
-            var form = new List<KeyValuePair<string, string>>
-            {
-                new("grant_type", "client_credentials"),
-            };
+            // JSON body rather than the more usual application/x-www-form-urlencoded —
+            // this is what the PADI token endpoint expects.
+            var tokenRequest = new Dictionary<string, string> { ["grant_type"] = "client_credentials" };
             if (!string.IsNullOrWhiteSpace(o.Scope))
-                form.Add(new KeyValuePair<string, string>("scope", o.Scope));
+                tokenRequest["scope"] = o.Scope;
 
             using var req = new HttpRequestMessage(HttpMethod.Post, o.TokenUrl)
             {
-                Content = new FormUrlEncodedContent(form),
+                Content = JsonContent.Create(tokenRequest),
             };
-            // client_secret_basic — the form-post variant is also common; swap if the
-            // service rejects this with invalid_client.
+            // client_secret_basic — credentials go in the header, not the JSON body.
             req.Headers.Authorization = new AuthenticationHeaderValue(
                 "Basic",
                 Convert.ToBase64String(

@@ -152,9 +152,54 @@ There are **two delivery paths**, and they do not share a provider.
 | `CustomEmailSender_AdminCreateUser` | Temporary password |
 | `CustomEmailSender_AccountTakeOverNotification` | Threat-protection alert |
 
-Cognito encrypts the one-time code with a customer-managed KMS key using the **AWS Encryption SDK envelope format** — `kms:Decrypt` alone will not open it, which is why `CustomEmailSender` depends on `AWS.Cryptography.EncryptionSDK`. Codes are never logged; only trigger source and request ID are.
+Cognito encrypts the one-time code with a customer-managed KMS key using the **AWS Encryption SDK envelope format** — `kms:Decrypt` alone will not open it, which is why `CustomEmailSender` depends on `AWS.Cryptography.EncryptionSDK`. Codes are never logged; only trigger source, definition key and request ID are.
 
 **Magic-link email** still goes directly to SES via `SesEmailChannel`, not through the messaging service. Moving it onto `MessagingClient` would consolidate both paths and is worth doing, but it is not done yet.
+
+### Request contract
+
+The messaging service owns the templates, so this sends a definition key and substitution values rather than rendered content. No subjects or bodies live in this repository.
+
+```csharp
+public sealed record EmailProxyRequest
+{
+    public required string ContactKey { get; init; }
+    public required string DefinitionKey { get; init; }
+    public required string RecipientEmail { get; init; }
+    public IReadOnlyDictionary<string, object?> Attributes { get; init; }
+}
+```
+
+Serialised **PascalCase** — `System.Text.Json` would otherwise camelCase the property names, which the service does not expect. `Attributes` is a dictionary rather than `dynamic`: identical on the wire, but compile-time checkable and free of the runtime binder.
+
+Attributes sent on every message:
+
+| Attribute | Source |
+|---|---|
+| `SubscriberKey` | Email address |
+| `EmailAddress` | Email address |
+| `VerificationCode` | Decrypted Cognito code |
+| `LanguageCode` | `custom:language`, defaulting to `en-US` |
+| `FirstName` | `given_name` |
+| `META_COUNTRY_CODE` | Currently hardcoded `US` |
+
+Anything in `ClientMetadata` is merged in afterwards and **overwrites** a colliding key, so a client can vary template behaviour — locale, brand, campaign — without a code change. Cognito forwards `ClientMetadata` for the `SignUp`, `ForgotPassword` and `Authentication` trigger sources only.
+
+`ContactKey` is the email address. Note that this makes the contact identity change if a user updates their email; Cognito's `sub` would be stable across that, if the messaging service can key on it.
+
+### Template definitions
+
+Definition ids are **not** in `cdk.json` or environment variables. They live in SSM under `/padi/services/authentication/Messaging/Definitions/<TriggerSource>`, named for the trigger source with the `CustomEmailSender_` prefix removed:
+
+```bash
+aws ssm put-parameter --name /padi/services/authentication/Messaging/Definitions/SignUp --type String --value "<definition-key>" --region us-west-2
+```
+
+Valid names: `SignUp`, `Authentication`, `ForgotPassword`, `ResendCode`, `UpdateUserAttribute`, `VerifyUserAttribute`, `AdminCreateUser`, `AccountTakeOverNotification`.
+
+A trigger source with no matching parameter logs a warning and sends nothing, rather than failing the underlying Cognito operation. `SignUp` and `Authentication` are the two the current sign-up and OTP flows depend on.
+
+> **Do not also set these as environment variables.** `LambdaHost` applies environment variables *after* SSM, so an env var of the same key silently shadows the parameter — the symptom is a warning about an unconfigured definition while the parameter looks correct in the console.
 
 ### Configuration and dependency injection
 
@@ -164,8 +209,11 @@ Cognito encrypts the one-time code with a customer-managed KMS key using the **A
 |---|---|
 | Env var `Messaging__EmailUrl` | `Messaging:EmailUrl` |
 | SSM `/padi/services/authentication/Messaging/ClientId` | `Messaging:ClientId` |
+| SSM `/padi/services/authentication/Messaging/Definitions/SignUp` | `Messaging:Definitions:SignUp` |
 
-The SSM path prefix is stripped by the provider, so parameter paths and environment-variable names converge on the same configuration keys. Read them through `IConfiguration`, or bound onto `MessagingOptions`:
+The SSM path prefix is stripped by the provider, so parameter paths and environment-variable names converge on the same configuration keys. **Environment variables are applied last and therefore win on a key collision** — intentional, so a value can be pinned per function, but it means anything sourced from Parameter Store must not also be set as an environment variable.
+
+Read values through `IConfiguration`, or bound onto `MessagingOptions`:
 
 ```csharp
 var url    = LambdaHost.Configuration["Messaging:EmailUrl"];
@@ -209,6 +257,8 @@ aws ssm put-parameter --name /padi/services/authentication/Messaging/ClientId --
 ```bash
 aws ssm put-parameter --name /padi/services/authentication/Messaging/ClientSecret --type SecureString --value "<client-secret>" --region us-west-2
 ```
+
+Template definition ids live under the same path — see [Template definitions](#template-definitions).
 
 Add `--overwrite` to rotate. No redeploy is needed; the change is picked up within 15 minutes.
 
@@ -373,7 +423,8 @@ Two details worth knowing if this code is modified:
 This is a proof of concept. Before production:
 
 - **Password policy is below current guidance** — 6 characters is Cognito's floor and short of the 8-character minimum in NIST SP 800-63B. The composition rules are also an unusual pairing: uppercase and lowercase are mandatory while digits are not, which pushes users toward predictable shapes like `Passwd` without adding real entropy. Prefer a longer minimum over composition requirements, and enable threat protection (requires the `plus` feature plan) so credentials are checked against known-breached passwords.
-- **The messaging service payload shape is unverified.** `MessagingClient.SendEmailAsync` posts `{from, to, subject, html, text, metadata}`, and the token request uses HTTP Basic client authentication. Neither has been confirmed against `/v1/email/transact`. Because `CustomEmailSender` has no fallback, a mismatch breaks sign-up, password reset, and email OTP simultaneously — **test a sign-up immediately after the first deploy**, and roll back by removing `CustomEmailSender` from `LambdaTriggers`.
+- **The messaging integration has not been exercised end to end.** The `EmailProxyRequest` shape matches the service contract, but the attribute names, the PascalCase serialisation, and HTTP Basic client authentication on the token request are all unconfirmed against a live call. Because `CustomEmailSender` has no fallback, a mismatch breaks sign-up, password reset, and email OTP simultaneously — **test a sign-up immediately after the first deploy**, and roll back by removing `CustomEmailSender` from `LambdaTriggers`.
+- **`META_COUNTRY_CODE` is hardcoded to `US`.** It should derive from a user attribute or `ClientMetadata` once the requirement is clear.
 - **`CustomEmailSender` is a hard dependency of authentication.** Cognito sends no email itself once the trigger is attached. There is no retry or SES failover; if the messaging service is unavailable, nobody can register or recover an account.
 - **Magic-link email bypasses the messaging service**, still going directly to SES via `SesEmailChannel`. Consolidating it onto `MessagingClient` would leave one delivery path instead of two.
 - **SES sender identity** — `magicLinkEmailFrom` (`no-reply@padi.com`) must be a verified identity in SES in the sending region for the magic-link path, and the account must be out of the SES sandbox to reach unverified recipients

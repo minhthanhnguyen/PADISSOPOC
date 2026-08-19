@@ -7,11 +7,16 @@ namespace Padi.Services.Authentication.Messaging.Http;
 /// Builds configuration and the DI container once per Lambda execution environment.
 ///
 /// Configuration sources, in precedence order (later wins):
-///   1. SSM Parameter Store under CONFIG_PARAMETER_PATH — secrets, reloaded periodically
+///   1. SSM Parameter Store under CONFIG_PARAMETER_PATH — secrets and template ids
 ///   2. Environment variables — non-secret settings, e.g. Messaging__EmailUrl
 ///
 /// Because SSM parameters surface as ordinary configuration keys, callers read them
 /// through <see cref="IConfiguration"/> exactly like environment variables.
+///
+/// Note the ordering: an environment variable SHADOWS an SSM parameter of the same key.
+/// That is intentional so a value can be pinned per function, but it means anything
+/// sourced from Parameter Store must not also be set as an environment variable —
+/// template ids under Messaging:Definitions are a case in point.
 /// </summary>
 public static class LambdaHost
 {

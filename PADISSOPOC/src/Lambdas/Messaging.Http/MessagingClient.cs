@@ -4,19 +4,6 @@ using Microsoft.Extensions.Options;
 
 namespace Padi.Services.Authentication.Messaging.Http;
 
-public sealed record EmailMessage
-{
-    public required string To { get; init; }
-    public required string Subject { get; init; }
-    public required string HtmlBody { get; init; }
-    public required string TextBody { get; init; }
-    /// <summary>Free-form hints (locale, brand, template id) forwarded from clientMetadata.</summary>
-    public IReadOnlyDictionary<string, string>? Metadata { get; init; }
-
-
-
-}
-
 public sealed record SmsMessage
 {
     public required string To { get; init; }
@@ -25,28 +12,17 @@ public sealed record SmsMessage
 }
 
 /// <summary>
-/// Talks to the PADI messaging service. All outbound mail from this stack — Cognito
-/// codes and magic links alike — goes through here, so the delivery provider is a
-/// single implementation detail rather than something each caller decides.
+/// Talks to the PADI messaging service. All outbound Cognito mail goes through here,
+/// so the delivery provider is a single implementation detail rather than something
+/// each caller decides.
 /// </summary>
 public sealed class MessagingClient(
     HttpClient http,
     BearerTokenProvider tokens,
     IOptionsMonitor<MessagingOptions> options)
 {
-    public Task SendEmailAsync(EmailMessage message, CancellationToken ct = default)
-    {
-        var o = options.CurrentValue;
-        return PostAsync(o.EmailUrl, new
-        {
-            from = o.FromAddress,
-            to = message.To,
-            subject = message.Subject,
-            html = message.HtmlBody,
-            text = message.TextBody,
-            metadata = message.Metadata,
-        }, ct);
-    }
+    public Task SendEmailAsync(EmailProxyRequest request, CancellationToken ct = default) =>
+        PostAsync(options.CurrentValue.EmailUrl, request, ct);
 
     public Task SendSmsAsync(SmsMessage message, CancellationToken ct = default)
     {
@@ -61,7 +37,7 @@ public sealed class MessagingClient(
 
         using var req = new HttpRequestMessage(HttpMethod.Post, url)
         {
-            Content = JsonContent.Create(payload),
+            Content = JsonContent.Create(payload, options: JsonOptions.Default),
         };
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
@@ -72,4 +48,17 @@ public sealed class MessagingClient(
         throw new HttpRequestException(
             $"Messaging service returned {(int)res.StatusCode} {res.ReasonPhrase}. {body}");
     }
+}
+
+internal static class JsonOptions
+{
+    /// <summary>
+    /// PascalCase on the wire to match the service's EmailProxyRequest contract —
+    /// System.Text.Json would otherwise camelCase the property names.
+    /// </summary>
+    public static readonly System.Text.Json.JsonSerializerOptions Default = new()
+    {
+        PropertyNamingPolicy = null,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+    };
 }

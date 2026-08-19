@@ -25,7 +25,14 @@ public static class CodeDecryptor
             KmsClient = new Amazon.KeyManagementService.AmazonKeyManagementServiceClient(),
         });
 
-        var esdk = new ESDK(new AwsEncryptionSdkConfig());
+        // Cognito encrypts codes with a NON-committing algorithm suite. The SDK default,
+        // REQUIRE_ENCRYPT_REQUIRE_DECRYPT, rejects those outright with
+        // InvalidAlgorithmSuiteInfoOnDecrypt. ALLOW_DECRYPT permits reading them while
+        // still requiring commitment on anything this code encrypts itself.
+        var esdk = new ESDK(new AwsEncryptionSdkConfig
+        {
+            CommitmentPolicy = ESDKCommitmentPolicy.REQUIRE_ENCRYPT_ALLOW_DECRYPT,
+        });
         return (esdk, keyring);
     });
 
