@@ -23,12 +23,18 @@ public static class Function
         {
             var body     = Http.ParseBody(req);
             var username = body?["username"]?.GetValue<string>();
-            if (string.IsNullOrWhiteSpace(username)) return Http.BadRequest("username required");
+            if (string.IsNullOrWhiteSpace(username))
+            {
+                return Http.BadRequest("username required");
+            }
 
             // An unsupported channel is a caller error, not a missing user — safe to surface.
             var channelName = body?["channel"]?.GetValue<string>();
             var channel = ChannelResolver.Resolve(channelName);
-            if (channel is null) return Http.BadRequest("channel must be 'email' or 'sms'");
+            if (channel is null)
+            {
+                return Http.BadRequest("channel must be 'email' or 'sms'");
+            }
 
             try
             {

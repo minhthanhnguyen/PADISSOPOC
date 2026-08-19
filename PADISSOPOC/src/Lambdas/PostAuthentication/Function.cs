@@ -79,7 +79,10 @@ public static class Function
     {
         var userPoolId = evt["userPoolId"]?.GetValue<string>();
         var userName   = evt["userName"]?.GetValue<string>();
-        if (string.IsNullOrEmpty(userPoolId) || string.IsNullOrEmpty(userName)) return;
+        if (string.IsNullOrEmpty(userPoolId) || string.IsNullOrEmpty(userName))
+        {
+            return;
+        }
 
         await _cognito.Value.AdminUpdateUserAttributesAsync(new AdminUpdateUserAttributesRequest
         {

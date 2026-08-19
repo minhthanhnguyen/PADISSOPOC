@@ -42,7 +42,10 @@ public sealed class MessagingClient(
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
         using var res = await http.SendAsync(req, ct);
-        if (res.IsSuccessStatusCode) return;
+        if (res.IsSuccessStatusCode)
+        {
+            return;
+        }
 
         var body = await res.Content.ReadAsStringAsync(ct);
         throw new HttpRequestException(

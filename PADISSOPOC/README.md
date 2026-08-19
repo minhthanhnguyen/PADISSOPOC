@@ -154,6 +154,22 @@ There are **two delivery paths**, and they do not share a provider.
 
 Cognito encrypts the one-time code with a customer-managed KMS key using the **AWS Encryption SDK envelope format** — `kms:Decrypt` alone will not open it, which is why `CustomEmailSender` depends on `AWS.Cryptography.EncryptionSDK`. Codes are never logged; only trigger source, definition key and request ID are.
 
+The decryptor sets `CommitmentPolicy = REQUIRE_ENCRYPT_ALLOW_DECRYPT`. Cognito encrypts with a **non-committing** algorithm suite, and the SDK default (`REQUIRE_ENCRYPT_REQUIRE_DECRYPT`) rejects those with `InvalidAlgorithmSuiteInfoOnDecrypt` before reaching KMS. The relaxed policy applies to decryption only; anything this code encrypts still requires commitment. Note the .NET API differs from the JavaScript one here — `ESDKCommitmentPolicy` is a smithy-generated union of static fields, not an enum, and lives in `AWS.Cryptography.MaterialProviders`.
+
+### Authenticating to the messaging service
+
+OAuth2 client credentials. The token request posts a **JSON** body — not the more usual `application/x-www-form-urlencoded` — with credentials in an HTTP Basic header:
+
+```
+POST <messagingTokenUrl>
+Authorization: Basic base64(clientId:clientSecret)
+Content-Type: application/json
+
+{ "grant_type": "client_credentials" }
+```
+
+`scope` is added to the body when `Messaging:Scope` is configured; it currently is not. The access token is cached in `BearerTokenProvider` for the life of the execution environment and refreshed 60 seconds before expiry, so a token call happens roughly once per cold start rather than per message.
+
 **Magic-link email** still goes directly to SES via `SesEmailChannel`, not through the messaging service. Moving it onto `MessagingClient` would consolidate both paths and is worth doing, but it is not done yet.
 
 ### Request contract
@@ -263,6 +279,15 @@ Template definition ids live under the same path — see [Template definitions](
 Add `--overwrite` to rotate. No redeploy is needed; the change is picked up within 15 minutes.
 
 IAM grants `ssm:GetParameter*` across `/padi/services/authentication/*`, so the path is a shared namespace — any parameter added under it becomes readable by these functions and appears in their configuration.
+
+The policy lists **two** ARNs, and both are required:
+
+```
+arn:aws:ssm:<region>:<account>:parameter/padi/services/authentication
+arn:aws:ssm:<region>:<account>:parameter/padi/services/authentication/*
+```
+
+`GetParametersByPath` authorizes against the path *node* — no trailing wildcard — while `GetParameter` authorizes against the parameters beneath it. Granting only `.../*` fails the enumeration the configuration provider performs at cold start, and because that happens while building configuration it fails every invocation of the function, not just the one that needed a parameter.
 
 ### Secrets Manager
 
@@ -399,6 +424,8 @@ Two details worth knowing if this code is modified:
 
 **Never rename a CDK construct ID.** IDs such as `"PadissoUserPool"`, `"PadissoAppClient"` and `"PadissoDomain"` determine CloudFormation logical IDs. Renaming one makes CloudFormation treat it as a new resource and destroy the original — so they deliberately still read `Padisso` even though the namespaces are now `Padi.Services.Authentication`. The same applies to the three `ExportName` values, which other stacks may reference.
 
+**Lambda timeouts are 30 seconds, but Cognito triggers are bounded by Cognito, not Lambda.** `DefineAuthChallenge`, `CreateAuthChallenge`, `VerifyAuthChallenge`, `PostAuthentication` and `CustomEmailSender` all run synchronously inside a Cognito request, and Cognito abandons a trigger after roughly 5 seconds regardless of the configured Lambda timeout. The higher ceiling helps with cold starts and produces a real stack trace instead of a bare `Task timed out`, but a trigger that genuinely needs longer must be made faster or asynchronous. The two Function URLs are not triggers, so 30 seconds applies to them directly.
+
 **A Lambda that is both a Cognito trigger and needs the pool ARN creates a dependency cycle.** CDK makes a function `DependsOn` its role's default policy, so `AddToRolePolicy` with a `UserPool.UserPoolArn` reference closes the loop: `UserPool → Function → DefaultPolicy → UserPool`. Attach a standalone `Policy` resource to the function's role instead — see `PostAuthCognitoPolicy`. `cdk synth` does not catch this; only the deploy fails.
 
 **The pool is `RemovalPolicy.RETAIN`.** Both `DeletionPolicy` and `UpdateReplacePolicy` are `Retain`, so a replacement orphans the original pool instead of deleting its users. Two consequences:
@@ -423,7 +450,7 @@ Two details worth knowing if this code is modified:
 This is a proof of concept. Before production:
 
 - **Password policy is below current guidance** — 6 characters is Cognito's floor and short of the 8-character minimum in NIST SP 800-63B. The composition rules are also an unusual pairing: uppercase and lowercase are mandatory while digits are not, which pushes users toward predictable shapes like `Passwd` without adding real entropy. Prefer a longer minimum over composition requirements, and enable threat protection (requires the `plus` feature plan) so credentials are checked against known-breached passwords.
-- **The messaging integration has not been exercised end to end.** The `EmailProxyRequest` shape matches the service contract, but the attribute names, the PascalCase serialisation, and HTTP Basic client authentication on the token request are all unconfirmed against a live call. Because `CustomEmailSender` has no fallback, a mismatch breaks sign-up, password reset, and email OTP simultaneously — **test a sign-up immediately after the first deploy**, and roll back by removing `CustomEmailSender` from `LambdaTriggers`.
+- **The messaging integration has not been exercised end to end.** The `EmailProxyRequest` shape matches the service contract, but the attribute names, the PascalCase serialisation, and HTTP Basic client authentication on the token request are all unconfirmed against a live call — if the endpoint expects `client_id` and `client_secret` inside the JSON body instead of the header, that is a small change in `BearerTokenProvider`. Because `CustomEmailSender` has no fallback, a mismatch breaks sign-up, password reset, and email OTP simultaneously — **test a sign-up immediately after the first deploy**, and roll back by removing `CustomEmailSender` from `LambdaTriggers`.
 - **`META_COUNTRY_CODE` is hardcoded to `US`.** It should derive from a user attribute or `ClientMetadata` once the requirement is clear.
 - **`CustomEmailSender` is a hard dependency of authentication.** Cognito sends no email itself once the trigger is attached. There is no retry or SES failover; if the messaging service is unavailable, nobody can register or recover an account.
 - **Magic-link email bypasses the messaging service**, still going directly to SES via `SesEmailChannel`. Consolidating it onto `MessagingClient` would leave one delivery path instead of two.

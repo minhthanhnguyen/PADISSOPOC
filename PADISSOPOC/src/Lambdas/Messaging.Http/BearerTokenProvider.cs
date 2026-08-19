@@ -20,12 +20,18 @@ public sealed class BearerTokenProvider(HttpClient http, IOptionsMonitor<Messagi
 
     public async Task<string> GetAsync(CancellationToken ct = default)
     {
-        if (Fresh(out var cached)) return cached;
+        if (Fresh(out var cached))
+        {
+            return cached;
+        }
 
         await _gate.WaitAsync(ct);
         try
         {
-            if (Fresh(out cached)) return cached;
+            if (Fresh(out cached))
+            {
+                return cached;
+            }
 
             // Read through IOptionsMonitor so a credential rotated in Parameter Store is
             // picked up on the next token refresh without a redeploy.
@@ -35,7 +41,9 @@ public sealed class BearerTokenProvider(HttpClient http, IOptionsMonitor<Messagi
             // this is what the PADI token endpoint expects.
             var tokenRequest = new Dictionary<string, string> { ["grant_type"] = "client_credentials" };
             if (!string.IsNullOrWhiteSpace(o.Scope))
+            {
                 tokenRequest["scope"] = o.Scope;
+            }
 
             using var req = new HttpRequestMessage(HttpMethod.Post, o.TokenUrl)
             {

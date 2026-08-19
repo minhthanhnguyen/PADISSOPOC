@@ -23,7 +23,10 @@ public static class Function
         try
         {
             var token = Http.ParseBody(req)?["token"]?.GetValue<string>();
-            if (string.IsNullOrWhiteSpace(token)) return Http.BadRequest("token required");
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return Http.BadRequest("token required");
+            }
 
             var hash = Crypto.Sha256Hex(token);
 
@@ -46,7 +49,9 @@ public static class Function
             }
 
             if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() >= long.Parse(row["expiresAt"].N))
+            {
                 return Http.Unauthorized();
+            }
 
             var username = row["username"].S;
             var metadata = new Dictionary<string, string> { ["admin_proof"] = Config.AdminProof };
