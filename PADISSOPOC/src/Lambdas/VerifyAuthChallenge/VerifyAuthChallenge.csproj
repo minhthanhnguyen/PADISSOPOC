@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AWSProjectType>Lambda</AWSProjectType>
     <AssemblyName>VerifyAuthChallenge</AssemblyName>
-    <RootNamespace>Padi.Services.Authentication.MagicLink.VerifyAuthChallenge</RootNamespace>
+    <RootNamespace>Padi.Services.Authentication.Cognito.VerifyAuthChallenge</RootNamespace>
     <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
     <PublishReadyToRun>true</PublishReadyToRun>
   </PropertyGroup>
@@ -14,6 +14,6 @@
     <PackageReference Include="Amazon.Lambda.Serialization.SystemTextJson" Version="3.0.0" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\MagicLink.Shared\MagicLink.Shared.csproj" />
+    <ProjectReference Include="..\..\Application\Application.csproj" />
   </ItemGroup>
 </Project>

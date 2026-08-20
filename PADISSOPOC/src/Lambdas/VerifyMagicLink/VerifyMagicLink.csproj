@@ -14,7 +14,9 @@
     <PackageReference Include="Amazon.Lambda.Serialization.SystemTextJson" Version="3.0.0" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\MagicLink.Shared\MagicLink.Shared.csproj" />
-    <ProjectReference Include="..\MagicLink.Aws\MagicLink.Aws.csproj" />
+    <ProjectReference Include="..\..\Application\Application.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Core\Core.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Cognito\Cognito.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\DynamoDb\DynamoDb.csproj" />
   </ItemGroup>
 </Project>

@@ -1,20 +1,17 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
-using Amazon.CognitoIdentityProvider;
-using Amazon.CognitoIdentityProvider.Model;
-using Amazon.DynamoDBv2;
-using Amazon.DynamoDBv2.Model;
 using Amazon.Lambda.Core;
-using Padi.Services.Authentication.MagicLink.Aws;
-using Padi.Services.Authentication.MagicLink.Shared;
+using Padi.Services.Authentication.Application.MagicLink;
 
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
 
 namespace Padi.Services.Authentication.MagicLink.VerifyMagicLink;
 
 /// <summary>
-/// Function URL: POST { "token": "abc123..." }
-/// Consumes a magic-link token and returns Cognito tokens. The Cognito session never
-/// reaches the client, so its 3-minute lifetime does not constrain the magic link.
+/// Function URL: POST { "token": "…" }
+///
+/// Returns Cognito tokens directly rather than establishing a session, so the caller
+/// persists them itself.
 /// </summary>
 public static class Function
 {
@@ -22,77 +19,45 @@ public static class Function
     {
         try
         {
-            var token = Http.ParseBody(req)?["token"]?.GetValue<string>();
+            var token = ParseBody(req)?["token"]?.GetValue<string>();
             if (string.IsNullOrWhiteSpace(token))
             {
-                return Http.BadRequest("token required");
+                return Response(400, new { error = "token required" });
             }
 
-            var hash = Crypto.Sha256Hex(token);
-
-            // Atomic single-use consume: conditional delete returns the row only if it existed.
-            Dictionary<string, AttributeValue> row;
-            try
+            var result = await Composition.Resolve<RedeemMagicLink>().ExecuteAsync(token);
+            if (!result.Succeeded || result.Tokens is null)
             {
-                var del = await Clients.Ddb.DeleteItemAsync(new DeleteItemRequest
-                {
-                    TableName           = Config.Table,
-                    Key                 = new Dictionary<string, AttributeValue> { ["tokenHash"] = new(hash) },
-                    ConditionExpression = "attribute_exists(tokenHash)",
-                    ReturnValues        = ReturnValue.ALL_OLD,
-                });
-                row = del.Attributes;
-            }
-            catch (ConditionalCheckFailedException)
-            {
-                return Http.Unauthorized();
+                return Response(401, new { error = "invalid or expired token" });
             }
 
-            if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() >= long.Parse(row["expiresAt"].N))
+            var tokens = result.Tokens;
+            return Response(200, new
             {
-                return Http.Unauthorized();
-            }
-
-            var username = row["username"].S;
-            var metadata = new Dictionary<string, string> { ["admin_proof"] = Config.AdminProof };
-
-            var init = await Clients.Cognito.AdminInitiateAuthAsync(new AdminInitiateAuthRequest
-            {
-                UserPoolId     = Config.UserPoolId,
-                ClientId       = Config.ClientId,
-                AuthFlow       = AuthFlowType.CUSTOM_AUTH,
-                AuthParameters = new Dictionary<string, string> { ["USERNAME"] = username },
-                ClientMetadata = metadata,
-            });
-
-            var resp = await Clients.Cognito.AdminRespondToAuthChallengeAsync(new AdminRespondToAuthChallengeRequest
-            {
-                UserPoolId    = Config.UserPoolId,
-                ClientId      = Config.ClientId,
-                ChallengeName = ChallengeNameType.CUSTOM_CHALLENGE,
-                Session       = init.Session,
-                ChallengeResponses = new Dictionary<string, string>
-                {
-                    ["USERNAME"] = username,
-                    ["ANSWER"]   = Config.AdminProof,
-                },
-                ClientMetadata = metadata,
-            });
-
-            var r = resp.AuthenticationResult;
-            return Http.Ok(new
-            {
-                idToken      = r.IdToken,
-                accessToken  = r.AccessToken,
-                refreshToken = r.RefreshToken,
-                expiresIn    = r.ExpiresIn,
-                tokenType    = r.TokenType,
+                idToken = tokens.IdToken,
+                accessToken = tokens.AccessToken,
+                refreshToken = tokens.RefreshToken,
+                expiresIn = tokens.ExpiresIn,
+                tokenType = tokens.TokenType,
             });
         }
         catch (Exception ex)
         {
             ctx.Logger.LogError(ex.ToString());
-            return Http.ServerError();
+            return Response(500, new { error = "internal error" });
         }
     }
+
+    private static JsonObject? ParseBody(JsonObject req)
+    {
+        var raw = req["body"]?.GetValue<string>();
+        return string.IsNullOrEmpty(raw) ? null : JsonNode.Parse(raw)?.AsObject();
+    }
+
+    private static JsonObject Response(int status, object body) => new()
+    {
+        ["statusCode"] = status,
+        ["headers"] = new JsonObject { ["content-type"] = "application/json" },
+        ["body"] = JsonSerializer.Serialize(body),
+    };
 }

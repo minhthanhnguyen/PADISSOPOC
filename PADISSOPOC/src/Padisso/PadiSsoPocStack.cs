@@ -88,7 +88,7 @@ namespace Padi.Services.Authentication
             {
                 FunctionName = "padi-sso-poc-define-auth",
                 Runtime = Runtime.DOTNET_10,
-                Handler = "DefineAuthChallenge::Padi.Services.Authentication.MagicLink.DefineAuthChallenge.Function::Handler",
+                Handler = "DefineAuthChallenge::Padi.Services.Authentication.Cognito.DefineAuthChallenge.Function::Handler",
                 Code = LambdaCode("DefineAuthChallenge"),
                 Timeout = Duration.Seconds(30),
                 MemorySize = 256,
@@ -98,7 +98,7 @@ namespace Padi.Services.Authentication
             {
                 FunctionName = "padi-sso-poc-create-auth",
                 Runtime = Runtime.DOTNET_10,
-                Handler = "CreateAuthChallenge::Padi.Services.Authentication.MagicLink.CreateAuthChallenge.Function::Handler",
+                Handler = "CreateAuthChallenge::Padi.Services.Authentication.Cognito.CreateAuthChallenge.Function::Handler",
                 Code = LambdaCode("CreateAuthChallenge"),
                 Timeout = Duration.Seconds(30),
                 MemorySize = 256,
@@ -204,7 +204,7 @@ namespace Padi.Services.Authentication
             {
                 FunctionName = "padi-sso-poc-verify-auth",
                 Runtime = Runtime.DOTNET_10,
-                Handler = "VerifyAuthChallenge::Padi.Services.Authentication.MagicLink.VerifyAuthChallenge.Function::Handler",
+                Handler = "VerifyAuthChallenge::Padi.Services.Authentication.Cognito.VerifyAuthChallenge.Function::Handler",
                 Code = LambdaCode("VerifyAuthChallenge"),
                 Timeout = Duration.Seconds(30),
                 MemorySize = 256,

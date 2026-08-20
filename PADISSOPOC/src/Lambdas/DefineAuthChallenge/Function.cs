@@ -1,35 +1,35 @@
 using System.Text.Json.Nodes;
 using Amazon.Lambda.Core;
+using Padi.Services.Authentication.Application.Cognito;
 
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
 
-namespace Padi.Services.Authentication.MagicLink.DefineAuthChallenge;
+namespace Padi.Services.Authentication.Cognito.DefineAuthChallenge;
 
 /// <summary>
-/// Cognito DefineAuthChallenge trigger. Decides which challenge to issue next.
-/// Only ever invoked via VerifyMagicLink's server-side AdminInitiateAuth call.
+/// Cognito DefineAuthChallenge trigger. A thin adapter: translates the event into the
+/// shape the use case expects and writes the decision back. All logic lives in
+/// <see cref="CustomAuthChallenge"/>, which has no AWS dependencies.
 /// </summary>
 public static class Function
 {
     public static JsonObject Handler(JsonObject evt, ILambdaContext _)
     {
-        var request  = evt["request"]!.AsObject();
-        var response = evt["response"]!.AsObject();
-        var session  = request["session"]!.AsArray();
+        var session = evt["request"]?["session"]?.AsArray() ?? [];
+        var priorResults = session
+            .Select(entry => entry?["challengeResult"]?.GetValue<bool>() ?? false)
+            .ToList();
 
-        if (session.Count == 0)
+        var decision = CustomAuthChallenge.Define(priorResults);
+
+        var response = evt["response"]!.AsObject();
+        response["issueTokens"] = decision.IssueTokens;
+        response["failAuthentication"] = decision.FailAuthentication;
+        if (decision.ChallengeName is not null)
         {
-            response["issueTokens"]        = false;
-            response["failAuthentication"] = false;
-            response["challengeName"]      = "CUSTOM_CHALLENGE";
+            response["challengeName"] = decision.ChallengeName;
         }
-        else
-        {
-            var last = session[^1]!.AsObject();
-            var ok   = last["challengeResult"]?.GetValue<bool>() ?? false;
-            response["issueTokens"]        = ok;
-            response["failAuthentication"] = !ok;
-        }
+
         return evt;
     }
 }

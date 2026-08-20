@@ -10,38 +10,63 @@ Supports password, passwordless (email OTP, SMS OTP, passkey), social federation
 
 All projects share the base namespace **`Padi.Services.Authentication`**.
 
+The solution follows clean architecture: dependencies point inward only.
+
 ```
 src/
-  Padisso/                    CDK app — PadiSsoPocStack
-  Lambdas/
-    MagicLink.Shared/         Config, Crypto, Http, IMagicLinkChannel  (no AWS SDK deps)
-    MagicLink.Aws/            AWS clients, SES/SNS delivery channels
-    Messaging.Http/           PADI messaging service client, config + DI host
-    DefineAuthChallenge/      Cognito trigger — custom auth
-    CreateAuthChallenge/      Cognito trigger — custom auth
-    VerifyAuthChallenge/      Cognito trigger — custom auth
-    PostAuthentication/       Cognito trigger — audit log + last-login
-    CustomEmailSender/        Cognito trigger — all outbound Cognito email
-    RequestMagicLink/         Lambda Function URL
-    VerifyMagicLink/          Lambda Function URL
-web/                          React reference client (Vite + TypeScript)
-publish-lambdas.ps1           Publishes all Lambda projects
-cdk.json                      Environment configuration (context block)
+  Domain/                       MagicLinkToken, DeliveryChannel, CognitoTriggerSource,
+                                SharedSecret                        — no dependencies
+  Application/
+    Abstractions/               ports: IUserDirectory, IMagicLinkTokenStore, IAuthenticator,
+                                IEmailSender, ICodeDecryptor, ITemplateCatalog,
+                                IClock, IAuditLog
+    Cognito/                    CustomAuthChallenge, SendCognitoMessage, RecordSignIn
+    MagicLink/                  RequestMagicLink, RedeemMagicLink
+  Infrastructure/
+    Core/                       SystemClock, ConsoleAuditLog, LambdaConfiguration  (no AWS SDK)
+    Configuration/              AddParameterStore()                    (Systems Manager SDK)
+    Cognito/                    CognitoUserDirectory, CognitoCustomAuthenticator
+    DynamoDb/                   DynamoMagicLinkTokenStore
+    Notifications/              SES and SNS magic-link delivery
+    Messaging/                  PADI messaging client, OAuth2 token provider
+    Kms/                        EncryptionSdkCodeDecryptor
+  Lambdas/                      thin adapters + per-function composition roots
+    DefineAuthChallenge/  CreateAuthChallenge/  VerifyAuthChallenge/
+    PostAuthentication/   CustomEmailSender/
+    RequestMagicLink/     VerifyMagicLink/
+  Padisso/                      CDK app — PadiSsoPocStack
+web/                            React reference client (Vite + TypeScript)
+publish-lambdas.ps1             Publishes all Lambda projects
+cdk.json                        Environment configuration (context block)
 ```
 
-Namespaces follow the directory structure — `Padi.Services.Authentication.MagicLink.Shared`, `…​.Cognito.CustomEmailSender`, and so on. Assembly names stay short (`CustomEmailSender`, `MagicLink.Shared`) because they form the first segment of each Lambda handler string.
+`Domain` has no dependencies. `Application` knows only `Domain` and declares ports as interfaces. `Infrastructure` implements those ports. Each Lambda is an adapter that maps its event onto a use case, plus a `Composition` class that wires the container once per execution environment.
 
-Dependencies are kept deliberately narrow so bundle size tracks what each function actually uses. `MagicLink.Shared` carries no AWS dependencies at all, which keeps the three custom-auth triggers near 110 KB. `MagicLink.Aws` holds the AWS clients and is referenced only by functions that talk to AWS services. `PostAuthentication` references the Cognito SDK directly rather than `MagicLink.Aws`, avoiding DynamoDB, SES and SNS it never calls.
+Namespaces follow the directory structure — `Padi.Services.Authentication.Application.MagicLink`, `….Infrastructure.Cognito`. Lambda assembly names stay short (`CustomEmailSender`, `RequestMagicLink`) because they form the first segment of each handler string.
 
-| Function | Bundle |
-|---|---|
-| DefineAuthChallenge / CreateAuthChallenge | 109 KB |
-| VerifyAuthChallenge | 141 KB |
-| PostAuthentication | 4.1 MB |
-| RequestMagicLink / VerifyMagicLink | 8.5 MB |
-| CustomEmailSender | 30 MB — the AWS Encryption SDK carries native crypto binaries |
+### Bundle sizes
 
-`CustomEmailSender` is well inside Lambda's 250 MB unzipped limit but is the largest cold start, and it sits in the critical path of every sign-up and OTP.
+Infrastructure is split per concern rather than into one project, so each Lambda carries only the SDKs it uses. A single `Infrastructure` assembly would push every function past 30 MB.
+
+| Function | References | Bundle |
+|---|---|---|
+| DefineAuthChallenge / CreateAuthChallenge | Application | 237–241 KB |
+| VerifyAuthChallenge | Application | 237 KB |
+| PostAuthentication | + Core, Cognito | 5.0 MB |
+| VerifyMagicLink | + Core, Cognito, DynamoDb | 7.5 MB |
+| RequestMagicLink | + Core, Cognito, DynamoDb, Notifications | 9.4 MB |
+| CustomEmailSender | + Core, Configuration, Messaging, Kms | 30 MB |
+
+The three custom-auth triggers reference **Application only** — no AWS SDKs — so they stay small by construction rather than by discipline. Two boundaries exist specifically to protect this:
+
+- **`Core` versus `Configuration`.** `Core` holds the clock, audit log and environment-variable configuration with no AWS packages; `Configuration` adds SSM Parameter Store. Only `CustomEmailSender` reads parameters, so only it ships `AWSSDK.SimpleSystemsManagement` — worth roughly 4 MB to the others.
+- **`PostAuthentication` references `Infrastructure.Cognito` alone**, never a broader bundle, keeping DynamoDB, SES and SNS out of a function that only writes a user attribute.
+
+`CustomEmailSender` is well inside Lambda's 250 MB unzipped limit but is the largest cold start, and sits in the critical path of every sign-up and OTP. The bulk is the AWS Encryption SDK's native crypto binaries.
+
+### Testability
+
+Use cases take their ports through the constructor, so they can be exercised with fakes — no AWS, no Lambda runtime. `CustomAuthChallenge` is pure static logic and needs no fakes at all. There are currently **no tests**; the structure makes them possible, which was the main motivation for the layering.
 
 ---
 
@@ -100,7 +125,7 @@ Both endpoints are Lambda Function URLs with `AuthType.NONE`. They declare CORS 
 
 ### Delivery channels
 
-`IMagicLinkChannel` abstracts transport *and* presentation, since a URL that reads well in email is hostile inside a 160-character SMS segment. Channel is explicit in the request and defaults to email — inferring it would be ambiguous for a user with both an email address and a phone number.
+`IMagicLinkDelivery` abstracts transport *and* presentation, since a URL that reads well in email is hostile inside a 160-character SMS segment. `SesMagicLinkDelivery` and `SnsMagicLinkDelivery` implement it; the use case selects one by channel. Channel is explicit in the request and defaults to email — inferring it would be ambiguous for a user with both an email address and a phone number.
 
 ---
 
@@ -170,7 +195,7 @@ Content-Type: application/json
 
 `scope` is added to the body when `Messaging:Scope` is configured; it currently is not. The access token is cached in `BearerTokenProvider` for the life of the execution environment and refreshed 60 seconds before expiry, so a token call happens roughly once per cold start rather than per message.
 
-**Magic-link email** still goes directly to SES via `SesEmailChannel`, not through the messaging service. Moving it onto `MessagingClient` would consolidate both paths and is worth doing, but it is not done yet.
+**Magic-link email** still goes directly to SES via `SesMagicLinkDelivery`, not through the messaging service. Both now implement Application ports, so consolidating means registering `MessagingEmailSender` in place of the SES delivery — a composition-root change rather than a rewrite.
 
 ### Request contract
 
@@ -215,11 +240,11 @@ Valid names: `SignUp`, `Authentication`, `ForgotPassword`, `ResendCode`, `Update
 
 A trigger source with no matching parameter logs a warning and sends nothing, rather than failing the underlying Cognito operation. `SignUp` and `Authentication` are the two the current sign-up and OTP flows depend on.
 
-> **Do not also set these as environment variables.** `LambdaHost` applies environment variables *after* SSM, so an env var of the same key silently shadows the parameter — the symptom is a warning about an unconfigured definition while the parameter looks correct in the console.
+> **Do not also set these as environment variables.** Configuration applies environment variables *after* SSM, so an env var of the same key silently shadows the parameter — the symptom is a warning about an unconfigured definition while the parameter looks correct in the console.
 
 ### Configuration and dependency injection
 
-`Messaging.Http` hosts `LambdaHost`, which builds an `IConfiguration` and a DI container once per execution environment. Two sources are merged, so callers cannot tell which supplied a given value:
+Each Lambda has a `Composition` class that builds an `IConfiguration` and a service provider once per execution environment, behind a `Lazy`. Configuration sources are merged so callers cannot tell which supplied a given value:
 
 | Source | Produces key |
 |---|---|
@@ -229,14 +254,26 @@ A trigger source with no matching parameter logs a warning and sends nothing, ra
 
 The SSM path prefix is stripped by the provider, so parameter paths and environment-variable names converge on the same configuration keys. **Environment variables are applied last and therefore win on a key collision** — intentional, so a value can be pinned per function, but it means anything sourced from Parameter Store must not also be set as an environment variable.
 
-Read values through `IConfiguration`, or bound onto `MessagingOptions`:
+Which sources a function reads depends on what it needs:
 
 ```csharp
-var url    = LambdaHost.Configuration["Messaging:EmailUrl"];
-var client = LambdaHost.Resolve<MessagingClient>();
+// CustomEmailSender — reads SSM parameters
+LambdaConfiguration.Create().AddParameterStore().AddEnvironment().Build();
+
+// RequestMagicLink, VerifyMagicLink — environment only, no Systems Manager SDK
+LambdaConfiguration.FromEnvironment();
 ```
 
-Credentials therefore **never appear in Lambda environment variables**, where `lambda:GetFunctionConfiguration` would expose them. The provider reloads every 15 minutes in the background, so rotating a parameter takes effect **without a redeploy** — `IOptionsMonitor` ensures the next token refresh picks up the new value.
+Values are read through `IConfiguration` or bound onto an options class:
+
+```csharp
+var url = configuration["Messaging:EmailUrl"];
+var sender = Composition.Resolve<SendCognitoMessage>();
+```
+
+Credentials therefore **never appear in Lambda environment variables**, where `lambda:GetFunctionConfiguration` would expose them.
+
+Rotating a parameter takes effect **without a redeploy**, but the timing is best-effort rather than guaranteed. `ReloadAfter` schedules a background refresh every 15 minutes; Lambda freezes the execution environment between invocations, so that timer fires only while the sandbox happens to be thawed. In practice a rotated value is reliably picked up on the **next cold start**, and opportunistically before then. `IOptionsMonitor` ensures the new value reaches `BearerTokenProvider` on its next token refresh.
 
 `MessagingOptions` validates with `[Required]` data annotations on first resolve. There is no `IHost`, so validation is lazy rather than at startup, which surfaces a missing value as a clear error in the invocation log.
 
@@ -453,10 +490,11 @@ This is a proof of concept. Before production:
 - **The messaging integration has not been exercised end to end.** The `EmailProxyRequest` shape matches the service contract, but the attribute names, the PascalCase serialisation, and HTTP Basic client authentication on the token request are all unconfirmed against a live call — if the endpoint expects `client_id` and `client_secret` inside the JSON body instead of the header, that is a small change in `BearerTokenProvider`. Because `CustomEmailSender` has no fallback, a mismatch breaks sign-up, password reset, and email OTP simultaneously — **test a sign-up immediately after the first deploy**, and roll back by removing `CustomEmailSender` from `LambdaTriggers`.
 - **`META_COUNTRY_CODE` is hardcoded to `US`.** It should derive from a user attribute or `ClientMetadata` once the requirement is clear.
 - **`CustomEmailSender` is a hard dependency of authentication.** Cognito sends no email itself once the trigger is attached. There is no retry or SES failover; if the messaging service is unavailable, nobody can register or recover an account.
-- **Magic-link email bypasses the messaging service**, still going directly to SES via `SesEmailChannel`. Consolidating it onto `MessagingClient` would leave one delivery path instead of two.
+- **Magic-link email bypasses the messaging service**, still going directly to SES via `SesMagicLinkDelivery`. Both sides now implement Application ports, so consolidating is a composition-root change.
 - **SES sender identity** — `magicLinkEmailFrom` (`no-reply@padi.com`) must be a verified identity in SES in the sending region for the magic-link path, and the account must be out of the SES sandbox to reach unverified recipients
 - **`magicLinkBaseUrl` and `magicLinkAllowedOrigins` both reference `localhost:5173`** for local testing. Both must be changed before any shared or production deployment.
-- **`CustomSMSSender` is not wired.** SMS OTP still uses Cognito's own delivery. `MessagingClient.SendSmsAsync` exists for it; attaching the trigger later is a `LambdaConfig` update-in-place, no pool replacement.
+- **There are no automated tests.** The clean-architecture split makes the use cases testable with fakes; nothing has been written yet.
+- **`CustomSMSSender` is not wired.** SMS OTP still uses Cognito's own delivery. `MessagingEmailSender` already implements `ISmsSender`; attaching the trigger later is a `LambdaConfig` update-in-place, no pool replacement.
 - **Function URLs use `AuthType.NONE`** — publicly reachable with no rate limiting on `/request-link`; put them behind API Gateway with WAF
 - **`ADMIN_PROOF` is stored in plain Lambda environment variables**, readable via `GetFunctionConfiguration`. The messaging credentials already avoid this by loading from Parameter Store at runtime — `ADMIN_PROOF` should move to the same mechanism.
 - **`ses:SendEmail` and `sns:Publish` are granted on `*`** and should be scoped

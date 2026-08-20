@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Authentication.Infrastructure.Configuration</AssemblyName>
+    <RootNamespace>Padi.Services.Authentication.Infrastructure.Configuration</RootNamespace>
+  </PropertyGroup>
+  <!-- Adds SSM Parameter Store as a configuration source. Referenced only by Lambdas that
+       actually read parameters, because it carries the Systems Manager SDK. -->
+  <ItemGroup>
+    <PackageReference Include="Amazon.Extensions.Configuration.SystemsManager" Version="7.1.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Core\Core.csproj" />
+  </ItemGroup>
+</Project>

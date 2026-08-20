@@ -17,6 +17,10 @@
     <PackageReference Include="AWS.Cryptography.EncryptionSDK" Version="5.0.0" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Messaging.Http\Messaging.Http.csproj" />
+    <ProjectReference Include="..\..\Application\Application.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Core\Core.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Configuration\Configuration.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Messaging\Messaging.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Kms\Kms.csproj" />
   </ItemGroup>
 </Project>

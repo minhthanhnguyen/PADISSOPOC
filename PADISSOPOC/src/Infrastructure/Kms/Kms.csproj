@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Authentication.Infrastructure.Kms</AssemblyName>
+    <RootNamespace>Padi.Services.Authentication.Infrastructure.Kms</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\Application\Application.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="AWS.Cryptography.EncryptionSDK" Version="5.0.0" />
+  </ItemGroup>
+</Project>

@@ -12,8 +12,13 @@
   <ItemGroup>
     <PackageReference Include="Amazon.Lambda.Core" Version="3.3.0" />
     <PackageReference Include="Amazon.Lambda.Serialization.SystemTextJson" Version="3.0.0" />
-    <!-- Cognito only. Deliberately does not reference MagicLink.Aws, which would drag in
-         the DynamoDB, SES and SNS SDKs this trigger never calls. -->
     <PackageReference Include="AWSSDK.CognitoIdentityProvider" Version="4.0.103.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Core rather than Configuration: this trigger reads no SSM parameters, and
+         Configuration would pull the Systems Manager SDK for nothing. -->
+    <ProjectReference Include="..\..\Application\Application.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Core\Core.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Cognito\Cognito.csproj" />
   </ItemGroup>
 </Project>

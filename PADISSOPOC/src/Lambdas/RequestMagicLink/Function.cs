@@ -1,9 +1,8 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
-using Amazon.CognitoIdentityProvider.Model;
-using Amazon.DynamoDBv2.Model;
 using Amazon.Lambda.Core;
-using Padi.Services.Authentication.MagicLink.Aws;
-using Padi.Services.Authentication.MagicLink.Shared;
+using Padi.Services.Authentication.Application.MagicLink;
+using Padi.Services.Authentication.Domain.MagicLink;
 
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
 
@@ -11,9 +10,10 @@ namespace Padi.Services.Authentication.MagicLink.RequestMagicLink;
 
 /// <summary>
 /// Function URL: POST { "username": "alice", "channel": "email" | "sms" }
-/// Generates a magic-link token, stores its hash in DynamoDB, and delivers the link
-/// over the requested channel. "channel" is optional and defaults to email.
-/// Always returns 200 so the endpoint cannot be used for user enumeration.
+///
+/// Always returns 200 for a well-formed request, whether or not the account exists —
+/// the endpoint must not become a user-enumeration oracle. An unsupported channel is a
+/// caller error and safe to report.
 /// </summary>
 public static class Function
 {
@@ -21,63 +21,42 @@ public static class Function
     {
         try
         {
-            var body     = Http.ParseBody(req);
+            var body = ParseBody(req);
+
             var username = body?["username"]?.GetValue<string>();
             if (string.IsNullOrWhiteSpace(username))
             {
-                return Http.BadRequest("username required");
+                return Response(400, new { error = "username required" });
             }
 
-            // An unsupported channel is a caller error, not a missing user — safe to surface.
-            var channelName = body?["channel"]?.GetValue<string>();
-            var channel = ChannelResolver.Resolve(channelName);
+            var channel = DeliveryChannelExtensions.Parse(body?["channel"]?.GetValue<string>());
             if (channel is null)
             {
-                return Http.BadRequest("channel must be 'email' or 'sms'");
+                return Response(400, new { error = "channel must be 'email' or 'sms'" });
             }
 
-            try
-            {
-                var user = await Clients.Cognito.AdminGetUserAsync(new AdminGetUserRequest
-                {
-                    UserPoolId = Config.UserPoolId,
-                    Username   = username,
-                });
+            await Composition.Resolve<Application.MagicLink.RequestMagicLink>()
+                .ExecuteAsync(new RequestMagicLinkCommand(Composition.UserPoolId, username, channel.Value));
 
-                var destination = user.UserAttributes
-                    .FirstOrDefault(a => a.Name == channel.UserAttribute)?.Value;
-
-                if (!string.IsNullOrEmpty(destination))
-                {
-                    var token     = Crypto.GenerateToken();
-                    var expiresAt = DateTimeOffset.UtcNow.AddMinutes(Config.TtlMin).ToUnixTimeSeconds();
-
-                    await Clients.Ddb.PutItemAsync(new PutItemRequest
-                    {
-                        TableName = Config.Table,
-                        Item = new Dictionary<string, AttributeValue>
-                        {
-                            ["tokenHash"] = new(Crypto.Sha256Hex(token)),
-                            ["username"]  = new(username),
-                            ["channel"]   = new(channel.Channel.ToString()),
-                            ["expiresAt"] = new() { N = expiresAt.ToString() },
-                        },
-                    });
-
-                    await channel.SendAsync(destination, token);
-                }
-            }
-            catch (UserNotFoundException)
-            {
-                // Deliberately silent — never reveal whether the account exists.
-            }
-
-            return Http.Ok(new { ok = true });
+            return Response(200, new { ok = true });
         }
         catch (Exception ex)
         {
             ctx.Logger.LogError(ex.ToString());
-            return Http.ServerError();
+            return Response(500, new { error = "internal error" });
         }
     }
+
+    private static JsonObject? ParseBody(JsonObject req)
+    {
+        var raw = req["body"]?.GetValue<string>();
+        return string.IsNullOrEmpty(raw) ? null : JsonNode.Parse(raw)?.AsObject();
+    }
+
+    private static JsonObject Response(int status, object body) => new()
+    {
+        ["statusCode"] = status,
+        ["headers"] = new JsonObject { ["content-type"] = "application/json" },
+        ["body"] = JsonSerializer.Serialize(body),
+    };
 }

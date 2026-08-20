@@ -5,12 +5,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AWSProjectType>Lambda</AWSProjectType>
     <AssemblyName>CreateAuthChallenge</AssemblyName>
-    <RootNamespace>Padi.Services.Authentication.MagicLink.CreateAuthChallenge</RootNamespace>
+    <RootNamespace>Padi.Services.Authentication.Cognito.CreateAuthChallenge</RootNamespace>
     <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
     <PublishReadyToRun>true</PublishReadyToRun>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Amazon.Lambda.Core" Version="3.3.0" />
     <PackageReference Include="Amazon.Lambda.Serialization.SystemTextJson" Version="3.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\Application\Application.csproj" />
   </ItemGroup>
 </Project>
