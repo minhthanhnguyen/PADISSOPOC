@@ -30,7 +30,9 @@ export default function Login() {
       }
 
       if (nextStep.signInStep === 'CONFIRM_SIGN_UP') {
-        navigate(`/confirm?username=${encodeURIComponent(username)}`);
+        // Pass the typed name as `as`, not `username`: an unconfirmed account has no
+        // alias, so the confirm page has to resolve it to the opaque id itself.
+        navigate(`/confirm?as=${encodeURIComponent(username)}`);
         return;
       }
 
@@ -46,6 +48,7 @@ export default function Login() {
     <main className="card">
       <h2>Sign in</h2>
       {params.get('confirmed') && <p className="notice">Email verified. You can sign in now.</p>}
+      {params.get('reset') && <p className="notice">Password reset. Sign in with your new password.</p>}
 
       <form onSubmit={onSubmit}>
         <label>
@@ -77,6 +80,9 @@ export default function Login() {
         </button>
       </form>
 
+      <p className="muted">
+        <Link to="/forgot-password">Forgot your password?</Link>
+      </p>
       <p className="muted">
         No account yet? <Link to="/signup">Create one</Link>
       </p>

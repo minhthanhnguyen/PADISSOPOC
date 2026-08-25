@@ -8,6 +8,9 @@ import PasswordlessLogin from './pages/PasswordlessLogin';
 import MagicLink from './pages/MagicLink';
 import MagicLinkLanding from './pages/MagicLinkLanding';
 import Dashboard from './pages/Dashboard';
+import ChangeEmail from './pages/ChangeEmail';
+import ForgotPassword from './pages/ForgotPassword';
+import ChangeUsername from './pages/ChangeUsername';
 
 type AuthState = 'checking' | 'signedIn' | 'signedOut';
 
@@ -49,6 +52,10 @@ export default function App() {
         <Route path="/confirm" element={signedIn ? <Navigate to="/" replace /> : <ConfirmEmail />} />
         <Route path="/login" element={signedIn ? <Navigate to="/" replace /> : <Login />} />
         <Route
+          path="/forgot-password"
+          element={signedIn ? <Navigate to="/" replace /> : <ForgotPassword />}
+        />
+        <Route
           path="/passwordless"
           element={signedIn ? <Navigate to="/" replace /> : <PasswordlessLogin />}
         />
@@ -57,6 +64,14 @@ export default function App() {
         <Route path="/magic-link" element={<MagicLink />} />
         {/* Where the emailed link lands — magicLinkBaseUrl points here. */}
         <Route path="/verify" element={<MagicLinkLanding />} />
+        <Route
+          path="/change-email"
+          element={signedIn ? <ChangeEmail /> : <Navigate to="/login" replace />}
+        />
+        <Route
+          path="/change-username"
+          element={signedIn ? <ChangeUsername /> : <Navigate to="/login" replace />}
+        />
         <Route path="/" element={signedIn ? <Dashboard /> : <Navigate to="/login" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

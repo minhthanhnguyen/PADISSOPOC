@@ -37,7 +37,10 @@ public sealed class RequestMagicLink(
         var delivery = deliveries.FirstOrDefault(d => d.Channel == command.Channel)
             ?? throw new InvalidOperationException($"No delivery registered for {command.Channel}.");
 
-        var token = MagicLinkToken.Issue(command.Username, command.Channel, clock.UtcNow, Lifetime);
+        // Issued against the directory's username, not the one the caller supplied. The
+        // caller may have passed a preferred_username alias, which the user can change
+        // between requesting a link and following it — the immutable username cannot.
+        var token = MagicLinkToken.Issue(user.Username, command.Channel, clock.UtcNow, Lifetime);
 
         // Persisted before sending: a token the user receives but cannot redeem is worse
         // than one stored and never delivered.

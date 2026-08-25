@@ -9,6 +9,7 @@ $projects = @(
     'CreateAuthChallenge',
     'VerifyAuthChallenge',
     'PostAuthentication',
+    'PostConfirmation',
     'CustomEmailSender',
     'RequestMagicLink',
     'VerifyMagicLink'

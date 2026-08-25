@@ -76,6 +76,9 @@ public interface ICodeDecryptor
 /// <summary>Maps a trigger's short name to a template id in the messaging service.</summary>
 public interface ITemplateCatalog
 {
+    /// <summary>Key an implementation may use for a catch-all template.</summary>
+    const string DefaultKey = "Default";
+
     string? TemplateKeyFor(string templateName);
 }
 

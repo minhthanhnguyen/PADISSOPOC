@@ -19,7 +19,7 @@
     "featurePlan": "essentials",
     "passkeyRelyingPartyId": "padi.com",
     "enabledIdps": [],
-    "cognitoDomain": "https://auth-stage-v2.padi.com",
+    "cognitoDomain": "https://auth-poc-stage-v2.padi.com",
     "cognitoDomainCertArn": "arn:aws:acm:us-east-1:152885574093:certificate/0689de72-8211-407d-a33b-9c7e24182e40",
     "callbackUrls": [ "https://account.global-np.padi.com/callback" ],
     "logoutUrls": [ "https://account.global-np.padi.com/logout" ],

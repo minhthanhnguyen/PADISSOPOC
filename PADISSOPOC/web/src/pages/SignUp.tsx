@@ -2,6 +2,8 @@ import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { signUp } from 'aws-amplify/auth';
 import { PASSWORD_RULES } from '../auth-config';
+import { rememberAccountId } from '../pending-signup';
+import { USERNAME_RULES, validateUsername } from '../username-rules';
 
 export default function SignUp() {
   const navigate = useNavigate();
@@ -21,22 +23,44 @@ export default function SignUp() {
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
+
+    // signUp cannot catch a bad name: the account's username is a UUID, so the request
+    // succeeds regardless and the problem only surfaces once PostConfirmation promotes
+    // the staged value into the alias.
+    const usernameProblem = validateUsername(form.username.trim());
+    if (usernameProblem) {
+      setError(usernameProblem);
+      return;
+    }
+
     setBusy(true);
     try {
+      // Cognito's username is immutable, so it cannot be the name the user picked — that
+      // name has to stay changeable. The account gets an opaque id the user never sees,
+      // and the chosen name is parked in custom:signup_username for the PostConfirmation
+      // trigger to promote into preferred_username, the alias they sign in with.
+      const accountId = crypto.randomUUID();
+      const chosen = form.username.trim();
+
       const { nextStep } = await signUp({
-        username: form.username,
+        username: accountId,
         password: form.password,
         options: {
           userAttributes: {
             email: form.email,
             given_name: form.givenName,
             family_name: form.familyName,
+            'custom:signup_username': chosen,
           },
         },
       });
 
+      // Until the account is confirmed the alias does not exist, so this id is the only
+      // way to reach it. Remembered here so a reload of /confirm can recover.
+      rememberAccountId(chosen, accountId);
+
       if (nextStep.signUpStep === 'CONFIRM_SIGN_UP') {
-        navigate(`/confirm?username=${encodeURIComponent(form.username)}`);
+        navigate(`/confirm?username=${encodeURIComponent(accountId)}&as=${encodeURIComponent(chosen)}`);
       } else {
         // No confirmation required (auto-confirmed) — go straight to sign-in.
         navigate('/login');
@@ -56,6 +80,7 @@ export default function SignUp() {
         <label>
           Username
           <input value={form.username} onChange={set('username')} autoComplete="username" required />
+          <small className="muted">You can change this later. {USERNAME_RULES}</small>
         </label>
 
         <div className="row">

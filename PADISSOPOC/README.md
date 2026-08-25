@@ -2,7 +2,9 @@
 
 AWS CDK application (C# / .NET 10) provisioning an Amazon Cognito user pool for PADI single sign-on.
 
-Supports password, passwordless (email OTP, SMS OTP, passkey), social federation, and a custom magic-link flow backed by Lambda and DynamoDB.
+Supports password, passwordless (email OTP, SMS OTP, passkey), social federation, and a custom magic-link flow backed by Lambda and DynamoDB. Usernames are mutable — see [Mutable usernames](#mutable-usernames).
+
+**[docs/architecture.md](docs/architecture.md)** has the diagrams: deployed topology, identity model, code layering, and the magic-link and email-delivery sequences.
 
 ---
 
@@ -15,12 +17,13 @@ The solution follows clean architecture: dependencies point inward only.
 ```
 src/
   Domain/                       MagicLinkToken, DeliveryChannel, CognitoTriggerSource,
-                                SharedSecret                        — no dependencies
+                                SharedSecret, UsernameRules         — no dependencies
   Application/
     Abstractions/               ports: IUserDirectory, IMagicLinkTokenStore, IAuthenticator,
                                 IEmailSender, ICodeDecryptor, ITemplateCatalog,
                                 IClock, IAuditLog
-    Cognito/                    CustomAuthChallenge, SendCognitoMessage, RecordSignIn
+    Cognito/                    CustomAuthChallenge, SendCognitoMessage, RecordSignIn,
+                                AssignPreferredUsername
     MagicLink/                  RequestMagicLink, RedeemMagicLink
   Infrastructure/
     Core/                       SystemClock, ConsoleAuditLog, LambdaConfiguration  (no AWS SDK)
@@ -32,7 +35,7 @@ src/
     Kms/                        EncryptionSdkCodeDecryptor
   Lambdas/                      thin adapters + per-function composition roots
     DefineAuthChallenge/  CreateAuthChallenge/  VerifyAuthChallenge/
-    PostAuthentication/   CustomEmailSender/
+    PostAuthentication/   PostConfirmation/     CustomEmailSender/
     RequestMagicLink/     VerifyMagicLink/
   Padisso/                      CDK app — PadiSsoPocStack
 web/                            React reference client (Vite + TypeScript)
@@ -50,17 +53,19 @@ Infrastructure is split per concern rather than into one project, so each Lambda
 
 | Function | References | Bundle |
 |---|---|---|
-| DefineAuthChallenge / CreateAuthChallenge | Application | 237–241 KB |
-| VerifyAuthChallenge | Application | 237 KB |
+| DefineAuthChallenge | Application | 249 KB |
+| CreateAuthChallenge | Application | 245 KB |
+| VerifyAuthChallenge | Application | 245 KB |
 | PostAuthentication | + Core, Cognito | 5.0 MB |
+| PostConfirmation | + Core, Cognito | 5.0 MB |
 | VerifyMagicLink | + Core, Cognito, DynamoDb | 7.5 MB |
 | RequestMagicLink | + Core, Cognito, DynamoDb, Notifications | 9.4 MB |
 | CustomEmailSender | + Core, Configuration, Messaging, Kms | 30 MB |
 
 The three custom-auth triggers reference **Application only** — no AWS SDKs — so they stay small by construction rather than by discipline. Two boundaries exist specifically to protect this:
 
-- **`Core` versus `Configuration`.** `Core` holds the clock, audit log and environment-variable configuration with no AWS packages; `Configuration` adds SSM Parameter Store. Only `CustomEmailSender` reads parameters, so only it ships `AWSSDK.SimpleSystemsManagement` — worth roughly 4 MB to the others.
-- **`PostAuthentication` references `Infrastructure.Cognito` alone**, never a broader bundle, keeping DynamoDB, SES and SNS out of a function that only writes a user attribute.
+- **`Core` versus `Configuration`.** `Core` holds the clock, audit log and environment-variable configuration with no AWS packages; `Configuration` adds SSM Parameter Store. Only `CustomEmailSender` reads parameters, so only it ships `AWSSDK.SimpleSystemsManagement` — one bundle out of eight, worth roughly 4 MB to each of the others.
+- **`PostAuthentication` and `PostConfirmation` reference `Infrastructure.Cognito` alone**, never a broader bundle, keeping DynamoDB, SES and SNS out of two functions that only write a user attribute.
 
 `CustomEmailSender` is well inside Lambda's 250 MB unzipped limit but is the largest cold start, and sits in the critical path of every sign-up and OTP. The bulk is the AWS Encryption SDK's native crypto binaries.
 
@@ -76,12 +81,53 @@ Use cases take their ports through the constructor, so they can be exercised wit
 |---|---|
 | Name | `padi-sso-poc-user-pool` |
 | Feature plan | `essentials` |
-| Sign-in alias | Username only, **case-insensitive** |
+| Sign-in alias | Username + **`preferred_username`**, case-insensitive |
 | Optional attributes | email, phone_number, given_name, family_name, birthdate |
-| Custom attributes | `custom:padi_id`, `custom:affiliate_id`, `custom:last_login` |
+| Custom attributes | `custom:padi_id`, `custom:affiliate_id`, `custom:last_login`, `custom:signup_username` |
 | Password policy | 6+ chars, upper + lower required; digits and symbols not required |
 | Account recovery | Email and phone, no MFA |
 | Passkey relying party | `padi.com` |
+
+### Mutable usernames
+
+Cognito's `username` can never change: *"After you create a user, you can't change the value of the `username` attribute."* No pool setting alters that. The mechanism AWS documents is `preferred_username` configured as an **alias attribute** — a secondary sign-in identifier the user can update.
+
+So the account's real username is an **opaque UUID the user never sees**, and `preferred_username` is the name they type. The sequence:
+
+```
+signUp(username: "a7f3e2c1-…", custom:signup_username: "minh9")
+  → confirmSignUp
+  → PostConfirmation promotes custom:signup_username into preferred_username
+  → signIn("minh9")
+
+updateUserAttributes({ preferred_username: "minh-new" })
+  → signIn("minh-new");  "minh9" is released for anyone to claim
+```
+
+The staging attribute exists because **Cognito rejects `preferred_username` in a SignUp request while it is an alias** — the value can only be assigned after confirmation, which is what the `PostConfirmation` trigger is for.
+
+#### Username characters
+
+Cognito constrains the `Username` request parameter of `SignUp`, `ForgotPassword`, `ConfirmSignUp` and the admin operations to **1–128 characters** matching `[\p{L}\p{M}\p{S}\p{N}\p{P}]+` — letters, marks, symbols, numbers and punctuation in any script. `\p{Z}` is absent, so **whitespace is rejected anywhere**: leading, trailing or internal. That omission is deliberate — the `AttributeType.Name` pattern is the same set *plus* `\t\n\r` and a space.
+
+The trap is that Cognito does not apply this where `preferred_username` is actually written. An attribute value is capped at 2048 characters with **no pattern at all**, so `updateUserAttributes({ preferred_username: "john smith" })` succeeds and produces an alias the user cannot sign in with or reset a password against. Nothing in the pool prevents it either: `StringAttributeConstraints` supports only min and max length, not a regex.
+
+Validation is therefore ours to enforce, in two places that must agree:
+
+| | |
+|---|---|
+| `src/Domain/Identity/UsernameRules.cs` | Enforced by the `PostConfirmation` trigger, which throws rather than write an unusable alias |
+| `web/src/username-rules.ts` | Enforced by `/signup` and `/change-username` before any Cognito call |
+
+Sign-up cannot rely on Cognito to catch a bad name: the account's username is a UUID, so `signUp` succeeds regardless and the problem only appears once `PostConfirmation` promotes the staged value.
+
+One divergence is handled explicitly. **.NET applies these Unicode categories per UTF-16 code unit**, so an emoji is seen as a surrogate pair and rejected, while JavaScript's `/u` flag matches by code point and would accept it. The browser rule rejects astral-plane characters outright so both sides agree — erring strict, because the cost is choosing another name rather than a confirmation that throws after the account exists.
+
+Three further consequences worth knowing:
+
+- **Uniqueness is enforced by Cognito.** Alias values must be unique pool-wide, so a taken name is rejected on update. No application-level check needed — unlike `email`, which is a plain attribute and *is* duplicable.
+- **An unconfirmed account has no alias yet.** Between sign-up and confirmation the UUID is the only identifier `confirmSignUp` and `resendSignUpCode` accept, and the user has never seen it. The client keeps it in `localStorage` (`web/src/pending-signup.ts`) so a reload or a login-page redirect can recover. Abandoning confirmation and returning on another device means signing up again — the chosen name is still free, because it never became an alias.
+- **Magic links are issued against the immutable username**, not the alias the caller supplied, so a username change between requesting a link and following it does not break redemption.
 
 ### Authentication methods
 
@@ -160,6 +206,20 @@ A PostAuthentication trigger that throws **fails the user's sign-in**. Both oper
 
 ---
 
+## Post-confirmation trigger
+
+Fires once, after a user confirms their account. Its only job is to promote `custom:signup_username` into `preferred_username` — see [Mutable usernames](#mutable-usernames) for why the value cannot be set at sign-up.
+
+It is idempotent in both directions: it returns early if `preferred_username` is already set (confirmation can be replayed), and logs a warning without failing if there is no staged name (an admin-created or federated account, which arrives by another route). A staged name that fails `UsernameRules` throws rather than being written — see [Username characters](#username-characters).
+
+### Failure behaviour
+
+**Exceptions propagate deliberately** — the opposite of the PostAuthentication trigger. That one runs inside a sign-in, where throwing would deny an already-successful authentication. This one runs after confirmation, where a swallowed failure produces an account with no sign-in alias, reachable only by a UUID the user has never seen. A visible failure at confirmation beats a silently unreachable account.
+
+IAM is a standalone `Policy` on the function's role rather than `AddToRolePolicy`, for the same reason as PostAuthentication: the pool references the function in `LambdaConfig`, and CDK makes a function depend on its role's default policy, so a pool ARN in that policy would close a `UserPool → Function → DefaultPolicy → UserPool` cycle.
+
+---
+
 ## Outbound email
 
 There are **two delivery paths**, and they do not share a provider.
@@ -172,12 +232,16 @@ There are **two delivery paths**, and they do not share a provider.
 | `CustomEmailSender_Authentication` | **Passwordless email OTP and MFA codes** |
 | `CustomEmailSender_ForgotPassword` | Password reset code |
 | `CustomEmailSender_ResendCode` | Replacement confirmation code |
-| `CustomEmailSender_UpdateUserAttribute` | Attribute change verification |
-| `CustomEmailSender_VerifyUserAttribute` | New attribute verification |
+| `CustomEmailSender_UpdateUserAttribute` | Attribute change verification — the change-email flow |
+| `CustomEmailSender_VerifyUserAttribute` | New attribute verification — "resend code" on that flow |
 | `CustomEmailSender_AdminCreateUser` | Temporary password |
 | `CustomEmailSender_AccountTakeOverNotification` | Threat-protection alert |
 
-Cognito encrypts the one-time code with a customer-managed KMS key using the **AWS Encryption SDK envelope format** — `kms:Decrypt` alone will not open it, which is why `CustomEmailSender` depends on `AWS.Cryptography.EncryptionSDK`. Codes are never logged; only trigger source, definition key and request ID are.
+Cognito encrypts the one-time code with a customer-managed KMS key using the **AWS Encryption SDK envelope format** — `kms:Decrypt` alone will not open it, which is why `CustomEmailSender` depends on `AWS.Cryptography.EncryptionSDK`. Codes are never logged; only trigger source, definition key, request ID and a masked recipient are.
+
+The recipient is masked as `m***7@gmail.com` — first and last character of the local part, deliberately weaker than a full mask so two similar addresses stay distinguishable in a log line.
+
+**On `UpdateUserAttribute`, `userAttributes.email` carries the user's new address, not the existing one** — confirmed against the live pool. This is worth stating explicitly because the AWS documentation reads the other way at first glance: it says the original value stays active "for sign-in and to receive messages" until the new one is verified. That sentence covers *other* messages. The verification code itself goes to the new address, which is the only behaviour consistent with the worked example on the same page, where a user who mistypes the new address never receives the email.
 
 The decryptor sets `CommitmentPolicy = REQUIRE_ENCRYPT_ALLOW_DECRYPT`. Cognito encrypts with a **non-committing** algorithm suite, and the SDK default (`REQUIRE_ENCRYPT_REQUIRE_DECRYPT`) rejects those with `InvalidAlgorithmSuiteInfoOnDecrypt` before reaching KMS. The relaxed policy applies to decryption only; anything this code encrypts still requires commitment. Note the .NET API differs from the JavaScript one here — `ESDKCommitmentPolicy` is a smithy-generated union of static fields, not an enum, and lives in `AWS.Cryptography.MaterialProviders`.
 
@@ -238,7 +302,15 @@ aws ssm put-parameter --name /padi/services/authentication/Messaging/Definitions
 
 Valid names: `SignUp`, `Authentication`, `ForgotPassword`, `ResendCode`, `UpdateUserAttribute`, `VerifyUserAttribute`, `AdminCreateUser`, `AccountTakeOverNotification`.
 
-A trigger source with no matching parameter logs a warning and sends nothing, rather than failing the underlying Cognito operation. `SignUp` and `Authentication` are the two the current sign-up and OTP flows depend on.
+A `Default` parameter, if set, serves any trigger source without its own entry:
+
+```bash
+aws ssm put-parameter --name /padi/services/authentication/Messaging/Definitions/Default --type String --value "<definition-key>" --region us-west-2
+```
+
+Every message this sender delivers is fundamentally "here is a code", so one generic template is a workable catch-all. It exists so that a newly-exercised flow degrades to a generic email rather than silently sending nothing — the failure mode that is hardest to diagnose, because Cognito still reports success to the caller.
+
+A trigger source with no matching parameter *and* no `Default` logs a warning naming the missing key, and sends nothing rather than failing the underlying Cognito operation. `SignUp` and `Authentication` are what the sign-up and OTP flows depend on; `UpdateUserAttribute` and `VerifyUserAttribute` are what the change-email flow depends on.
 
 > **Do not also set these as environment variables.** Configuration applies environment variables *after* SSM, so an env var of the same key silently shadows the parameter — the symptom is a warning about an unconfigured definition while the parameter looks correct in the console.
 
@@ -378,6 +450,24 @@ Inspect pending changes before deploying against an existing pool:
 npx cdk diff
 ```
 
+### Replacing the user pool
+
+Adding `preferred_username` changed the pool's construct ID to `PadissoUserPoolV2`, because sign-in alias configuration is fixed at creation and `UpdateUserPool` cannot change it. CloudFormation therefore **creates a new pool** and, under `RemovalPolicy.RETAIN`, leaves the previous one orphaned rather than deleting it. New pool id, new app client id, no users.
+
+There is an ordering trap: **a custom domain can only be attached to one pool at a time.** The retained pool keeps whatever domain it already holds, so a new pool asking for the same name fails — and because the pool is `RETAIN`, the failed rollback would orphan a half-built pool.
+
+This deployment sidestepped it by moving to a **new subdomain**: `cognitoDomain` changed from `auth-stage-v2.padi.com` to `auth-poc-stage-v2.padi.com`, so the two pools never contend. The ACM certificate covers both. That is the cheapest route when the old pool is being kept around.
+
+The alternatives, if the domain name has to be reused: delete the old pool first, or deploy in two steps —
+
+```bash
+npx cdk deploy -c customDomainEnabled=false
+```
+
+— then delete the old pool (it has no deletion protection) and deploy again normally to attach the domain.
+
+Either way, copy the new `UserPoolId` and `UserPoolClientId` outputs into `web/.env.local`; the old values will not work, and a client id from one pool paired with another pool's id fails on the first call. `RequestMagicLinkUrl` and `VerifyMagicLinkUrl` do **not** change — the Function URLs survive because only the pool is replaced, not the Lambdas.
+
 ### Stack outputs
 
 `PadissoUserPoolId`, `PadissoUserPoolClientId`, `PadissoUserPoolDomain`, `RequestMagicLinkUrl`, `VerifyMagicLinkUrl`
@@ -391,11 +481,14 @@ A minimal React reference client lives in `web/` — Vite, TypeScript, and AWS A
 | Route | Purpose |
 |---|---|
 | `/signup` | Username, password, email, first name, last name |
-| `/confirm` | 6-digit email verification code; account is unconfirmed until entered |
+| `/confirm` | 6-digit email verification code; account is unconfirmed until entered. Resolves the chosen name to the opaque account id via `localStorage` |
 | `/login` | Username + password over SRP |
+| `/forgot-password` | Two-step reset: username, then code + new password |
 | `/passwordless` | Choice-based `USER_AUTH` — email OTP, SMS OTP, or passkey |
 | `/magic-link` | Requests a link; manual token redemption as a fallback |
 | `/verify` | Where the emailed link lands — redeems the token automatically and shows a placeholder signed-in page |
+| `/change-email` | Two-step email change: new address, then the verification code. Signed-in only |
+| `/change-username` | Updates `preferred_username`. Immediate, no verification step. Signed-in only |
 | `/` | ID and access tokens, decoded claims, passkey management; redirects to `/login` when signed out |
 
 ### Running it
@@ -428,6 +521,9 @@ npm run dev --prefix web
 - **Email verification is enforced by the pool.** `AutoVerify` is on for email, so `signUp` returns a `CONFIRM_SIGN_UP` next step and Cognito emails a code. Sign-in fails until `confirmSignUp` succeeds. The login page detects an unconfirmed account and routes back to `/confirm`.
 - **Cognito's default email sender caps at 50 messages/day**, which covers these verification codes — the first thing to hit if you test signup repeatedly.
 - **No hosted UI involvement.** The client calls the Cognito API directly, so `callbackUrls` is not used. Add `http://localhost:5173` to `callbackUrls` in `cdk.json` before wiring up social sign-in through the hosted UI.
+- **Password reset does not reveal whether an account exists.** The app client sets `PreventUserExistenceErrors`, so `resetPassword` for an unknown username returns a normal `CONFIRM_RESET_PASSWORD_WITH_CODE` step with a **fabricated** masked destination rather than throwing. Verified: `not-a-real-user-9df3` returns `n***@h***`. Don't "improve" `/forgot-password` by surfacing a not-found error — that would reintroduce enumeration.
+- **Changing email needs a session refresh.** The ID token caches the `email` claim, so `/change-email` calls `fetchAuthSession({ forceRefresh: true })` after confirming. Without it the dashboard keeps showing the old address even though the pool has the new one.
+- **Email is not unique.** It is an attribute, not a sign-in alias, so Cognito will not stop two accounts holding the same address. `/change-email` only rejects re-entering the account's *current* address. Enforce uniqueness in the app if it matters.
 
 ### Passwordless testability
 
@@ -461,7 +557,7 @@ Two details worth knowing if this code is modified:
 
 **Never rename a CDK construct ID.** IDs such as `"PadissoUserPool"`, `"PadissoAppClient"` and `"PadissoDomain"` determine CloudFormation logical IDs. Renaming one makes CloudFormation treat it as a new resource and destroy the original — so they deliberately still read `Padisso` even though the namespaces are now `Padi.Services.Authentication`. The same applies to the three `ExportName` values, which other stacks may reference.
 
-**Lambda timeouts are 30 seconds, but Cognito triggers are bounded by Cognito, not Lambda.** `DefineAuthChallenge`, `CreateAuthChallenge`, `VerifyAuthChallenge`, `PostAuthentication` and `CustomEmailSender` all run synchronously inside a Cognito request, and Cognito abandons a trigger after roughly 5 seconds regardless of the configured Lambda timeout. The higher ceiling helps with cold starts and produces a real stack trace instead of a bare `Task timed out`, but a trigger that genuinely needs longer must be made faster or asynchronous. The two Function URLs are not triggers, so 30 seconds applies to them directly.
+**Lambda timeouts are 30 seconds, but Cognito triggers are bounded by Cognito, not Lambda.** `DefineAuthChallenge`, `CreateAuthChallenge`, `VerifyAuthChallenge`, `PostAuthentication`, `PostConfirmation` and `CustomEmailSender` all run synchronously inside a Cognito request, and Cognito abandons a trigger after roughly 5 seconds regardless of the configured Lambda timeout. The higher ceiling helps with cold starts and produces a real stack trace instead of a bare `Task timed out`, but a trigger that genuinely needs longer must be made faster or asynchronous. The two Function URLs are not triggers, so 30 seconds applies to them directly.
 
 **A Lambda that is both a Cognito trigger and needs the pool ARN creates a dependency cycle.** CDK makes a function `DependsOn` its role's default policy, so `AddToRolePolicy` with a `UserPool.UserPoolArn` reference closes the loop: `UserPool → Function → DefaultPolicy → UserPool`. Attach a standalone `Policy` resource to the function's role instead — see `PostAuthCognitoPolicy`. `cdk synth` does not catch this; only the deploy fails.
 
@@ -486,8 +582,11 @@ Two details worth knowing if this code is modified:
 
 This is a proof of concept. Before production:
 
+- **The V2 pool is deployed but the mutable-username flows are untested.** Sign-up, password reset and change email were proven against the *previous* pool, before `preferred_username` existed. The triggers and messaging path are unchanged so they should carry over, but nothing in the new design has been exercised. Test sign-up first: it now spans `signUp` → `PostConfirmation` → alias assignment, the longest untried path in the system, and the only one that can leave an account unreachable if it fails.
+- **The previous pool is orphaned, not deleted.** `RemovalPolicy.RETAIN` means CloudFormation left it behind when the logical ID changed. It still holds the old test accounts and the `auth-stage-v2.padi.com` custom domain, and it still bills for anything the feature plan charges. Delete it once nothing depends on it.
+- **Confirmation is browser-bound.** Between sign-up and confirmation an account has no `preferred_username`, so the opaque UUID is the only identifier Cognito accepts, and it lives in `localStorage`. A user who abandons confirmation and returns on another device cannot finish; they sign up again, and the chosen name is still free. Acceptable for a POC — a production flow should confirm by emailed link carrying the id, or auto-confirm via `PreSignUp` and verify email separately.
 - **Password policy is below current guidance** — 6 characters is Cognito's floor and short of the 8-character minimum in NIST SP 800-63B. The composition rules are also an unusual pairing: uppercase and lowercase are mandatory while digits are not, which pushes users toward predictable shapes like `Passwd` without adding real entropy. Prefer a longer minimum over composition requirements, and enable threat protection (requires the `plus` feature plan) so credentials are checked against known-breached passwords.
-- **The messaging integration has not been exercised end to end.** The `EmailProxyRequest` shape matches the service contract, but the attribute names, the PascalCase serialisation, and HTTP Basic client authentication on the token request are all unconfirmed against a live call — if the endpoint expects `client_id` and `client_secret` inside the JSON body instead of the header, that is a small change in `BearerTokenProvider`. Because `CustomEmailSender` has no fallback, a mismatch breaks sign-up, password reset, and email OTP simultaneously — **test a sign-up immediately after the first deploy**, and roll back by removing `CustomEmailSender` from `LambdaTriggers`.
+- **The messaging integration is proven for the account lifecycle, not for every trigger source.** Live `SignUp`, `ForgotPassword` and `UpdateUserAttribute` deliveries have each exercised the whole chain — Parameter Store credentials, the `client_credentials` token request with HTTP Basic client authentication, `EmailProxyRequest` attribute names and PascalCase serialisation, and Encryption SDK code decryption. Register, recover and change-email all worked end to end — though against the pool that `PadissoUserPoolV2` replaces, so they need one confirmation run after the new pool is deployed. Still unexercised: `Authentication`, `ResendCode`, `VerifyUserAttribute`, `AdminCreateUser`, `AccountTakeOverNotification`. These differ only in template key, so the remaining risk is a missing or wrong `Messaging:Definitions:*` entry, not a broken integration — and the `Default` fallback covers any of them that lack a specific key. `Authentication` is the next one worth a live test: the passwordless email-OTP flow depends on it. Because `CustomEmailSender` has no fallback, roll back by removing it from `LambdaTriggers`.
 - **`META_COUNTRY_CODE` is hardcoded to `US`.** It should derive from a user attribute or `ClientMetadata` once the requirement is clear.
 - **`CustomEmailSender` is a hard dependency of authentication.** Cognito sends no email itself once the trigger is attached. There is no retry or SES failover; if the messaging service is unavailable, nobody can register or recover an account.
 - **Magic-link email bypasses the messaging service**, still going directly to SES via `SesMagicLinkDelivery`. Both sides now implement Application ports, so consolidating is a composition-root change.

@@ -87,14 +87,36 @@ export default function Dashboard() {
   return (
     <main className="card wide">
       <div className="token-head">
-        <h2>Signed in as {tokens.username}</h2>
+        {/* preferred_username, not tokens.username — the latter is the opaque account id. */}
+        <h2>Signed in as {claim('preferred_username')}</h2>
         <button type="button" onClick={onSignOut}>Sign out</button>
       </div>
 
       <table className="claims">
         <tbody>
+          <tr>
+            <th>preferred_username</th>
+            <td>
+              {claim('preferred_username')}{' '}
+              <button type="button" className="linkish" onClick={() => navigate('/change-username')}>
+                Change
+              </button>
+            </td>
+          </tr>
+          <tr>
+            <th>account id</th>
+            <td><span className="muted">{tokens.username}</span></td>
+          </tr>
           <tr><th>sub</th><td>{claim('sub')}</td></tr>
-          <tr><th>email</th><td>{claim('email')}</td></tr>
+          <tr>
+            <th>email</th>
+            <td>
+              {claim('email')}{' '}
+              <button type="button" className="linkish" onClick={() => navigate('/change-email')}>
+                Change
+              </button>
+            </td>
+          </tr>
           <tr><th>email_verified</th><td>{String(tokens.claims.email_verified ?? '—')}</td></tr>
           <tr><th>given_name</th><td>{claim('given_name')}</td></tr>
           <tr><th>family_name</th><td>{claim('family_name')}</td></tr>

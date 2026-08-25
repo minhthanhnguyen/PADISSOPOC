@@ -24,6 +24,11 @@ public sealed class MessagingOptions
     /// <summary>
     /// Messaging-service template ids, keyed by trigger source with the
     /// <c>CustomEmailSender_</c> prefix removed — e.g. <c>Messaging:Definitions:SignUp</c>.
+    ///
+    /// A <c>Default</c> entry, if present, serves any trigger source without its own key.
+    /// Every trigger this sender handles delivers a verification code, so one generic
+    /// template is a workable fallback and means a newly-exercised flow fails soft rather
+    /// than silently sending nothing.
     /// </summary>
     public Dictionary<string, string> Definitions { get; set; } = new();
 }
@@ -31,8 +36,17 @@ public sealed class MessagingOptions
 public sealed class OptionsTemplateCatalog(
     Microsoft.Extensions.Options.IOptionsMonitor<MessagingOptions> options) : ITemplateCatalog
 {
-    public string? TemplateKeyFor(string templateName) =>
-        options.CurrentValue.Definitions.TryGetValue(templateName, out var key) && !string.IsNullOrWhiteSpace(key)
-            ? key
+    public string? TemplateKeyFor(string templateName)
+    {
+        var definitions = options.CurrentValue.Definitions;
+
+        if (definitions.TryGetValue(templateName, out var key) && !string.IsNullOrWhiteSpace(key))
+        {
+            return key;
+        }
+
+        return definitions.TryGetValue(ITemplateCatalog.DefaultKey, out var fallback) && !string.IsNullOrWhiteSpace(fallback)
+            ? fallback
             : null;
+    }
 }

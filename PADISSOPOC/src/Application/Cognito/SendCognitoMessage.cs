@@ -35,7 +35,12 @@ public sealed class SendCognitoMessage(
         if (string.IsNullOrWhiteSpace(templateKey))
         {
             // An unconfigured template must not block the Cognito operation that caused it.
-            audit.Warn($"No template configured for '{templateName ?? command.TriggerSource.Value}'; nothing sent.");
+            // Cognito still reports success to the caller, so this warning is the only
+            // signal that a user was told a code was sent and never received one — name
+            // the missing key so the cause is obvious from the log line alone.
+            audit.Warn(
+                $"No template configured for '{templateName ?? command.TriggerSource.Value}'; nothing sent. " +
+                $"Set Messaging:Definitions:{templateName} or Messaging:Definitions:{ITemplateCatalog.DefaultKey}.");
             return;
         }
 
@@ -56,7 +61,29 @@ public sealed class SendCognitoMessage(
         {
             ["triggerSource"] = command.TriggerSource.Value,
             ["templateKey"] = templateKey,
+            ["recipient"] = Mask(recipient),
         });
+    }
+
+    /// <summary>
+    /// Keeps the first and last character of the local part, so two addresses that differ
+    /// only near the end still read differently in a log line. On an attribute-update
+    /// trigger this is what shows whether Cognito targeted the new address or the old one.
+    /// </summary>
+    private static string Mask(string address)
+    {
+        var at = address.IndexOf('@');
+        if (at <= 0)
+        {
+            return "***";
+        }
+
+        var local = address[..at];
+        var domain = address[at..];
+
+        return local.Length < 3
+            ? $"{local[0]}***{domain}"
+            : $"{local[0]}***{local[^1]}{domain}";
     }
 
     private static Dictionary<string, object?> BuildAttributes(

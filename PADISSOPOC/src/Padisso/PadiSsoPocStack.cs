@@ -16,7 +16,7 @@ namespace Padi.Services.Authentication
     {
         public UserPool UserPool { get; }
         public UserPoolClient UserPoolClient { get; }
-        public UserPoolDomain UserPoolDomain { get; }
+        public UserPoolDomain UserPoolDomain { get; }  // null while customDomainEnabled is false
 
 
         internal PadiSsoPocStack(Construct scope, string id, IStackProps props = null) : base(scope, id, props)
@@ -200,6 +200,16 @@ namespace Padi.Services.Authentication
                 MemorySize = 256,
             });
 
+            var postConfirmFn = new Function(this, "PostConfirmationFn", new FunctionProps
+            {
+                FunctionName = "padi-sso-poc-post-confirm",
+                Runtime = Runtime.DOTNET_10,
+                Handler = "PostConfirmation::Padi.Services.Authentication.Cognito.PostConfirmation.Function::Handler",
+                Code = LambdaCode("PostConfirmation"),
+                Timeout = Duration.Seconds(30),
+                MemorySize = 256,
+            });
+
             var verifyFn = new Function(this, "VerifyAuthChallengeFn", new FunctionProps
             {
                 FunctionName = "padi-sso-poc-verify-auth",
@@ -214,14 +224,24 @@ namespace Padi.Services.Authentication
                 },
             });
 
-            UserPool = new UserPool(this, "PadissoUserPool", new UserPoolProps
+            // Construct ID is deliberately versioned. Sign-in alias configuration is fixed
+            // at pool creation — Cognito's UpdateUserPool cannot change it — so adding
+            // preferred_username requires a genuinely new pool rather than an update to
+            // the existing one. A new logical ID creates it; RemovalPolicy.RETAIN on the
+            // old pool leaves that one orphaned rather than deleted.
+            UserPool = new UserPool(this, "PadissoUserPoolV2", new UserPoolProps
             {
                 UserPoolName = userPoolName,
                 FeaturePlan = featurePlan,
                 SelfSignUpEnabled = true,
                 SignInAliases = new SignInAliases
                 {
+                    // The real username is an opaque UUID the user never sees. Cognito
+                    // fixes it at creation and it can never change, so it cannot be the
+                    // name anyone types. preferred_username is the mutable alias they
+                    // actually sign in with.
                     Username = true,
+                    PreferredUsername = true,
                     Email = false,
                     Phone = false,
                 },
@@ -252,6 +272,10 @@ namespace Padi.Services.Authentication
                 {
                     ["padi_id"]      = new StringAttribute(new StringAttributeProps { Mutable = true }),
                     ["affiliate_id"] = new StringAttribute(new StringAttributeProps { Mutable = true }),
+                    // Staging slot for the name chosen at sign-up. SignUp cannot set
+                    // preferred_username directly while it is an alias, so the value is
+                    // parked here and promoted by the PostConfirmation trigger.
+                    ["signup_username"] = new StringAttribute(new StringAttributeProps { Mutable = true }),
                     // Written by the PostAuthentication trigger on every sign-in.
                     ["last_login"]   = new StringAttribute(new StringAttributeProps { Mutable = true }),
                 },
@@ -273,6 +297,10 @@ namespace Padi.Services.Authentication
                     CreateAuthChallenge = createFn,
                     VerifyAuthChallengeResponse = verifyFn,
                     PostAuthentication = postAuthFn,
+                    // Promotes custom:signup_username into preferred_username. Cognito
+                    // rejects preferred_username in a SignUp request while it is an alias,
+                    // so this is the only point the value can be assigned.
+                    PostConfirmation = postConfirmFn,
                     // Takes over ALL Cognito-originated email, including passwordless
                     // email OTP (CustomEmailSender_Authentication). Cognito sends nothing
                     // itself once this is set — there is no fallback if the trigger fails.
@@ -291,6 +319,21 @@ namespace Padi.Services.Authentication
             new Policy(this, "PostAuthCognitoPolicy", new PolicyProps
             {
                 Roles = new[] { postAuthFn.Role! },
+                Statements = new[]
+                {
+                    new PolicyStatement(new PolicyStatementProps
+                    {
+                        Actions   = new[] { "cognito-idp:AdminUpdateUserAttributes" },
+                        Resources = new[] { UserPool.UserPoolArn },
+                    }),
+                },
+            });
+
+            // Same cycle-avoidance as above: this function is referenced by the pool's
+            // LambdaConfig, so its permission must not live in the role's default policy.
+            new Policy(this, "PostConfirmCognitoPolicy", new PolicyProps
+            {
+                Roles = new[] { postConfirmFn.Role! },
                 Statements = new[]
                 {
                     new PolicyStatement(new PolicyStatementProps
@@ -401,14 +444,24 @@ namespace Padi.Services.Authentication
                 clientIdps.Add(UserPoolClientIdentityProvider.Custom("Microsoft"));
             }
 
-            UserPoolDomain = UserPool.AddDomain("PadissoDomain", new UserPoolDomainOptions
+            // A custom domain can only be associated with one user pool at a time, and the
+            // pool being replaced still holds this one. Deploying the new pool while the
+            // old one exists fails on the domain — and because the pool is RETAIN, a failed
+            // rollback would orphan a half-built pool. Set customDomainEnabled=false for a
+            // first deploy, delete the old pool, then re-enable and deploy again.
+            var customDomainEnabled = (bool?)Node.TryGetContext("customDomainEnabled") ?? true;
+
+            if (customDomainEnabled)
             {
-                CustomDomain = new CustomDomainOptions
+                UserPoolDomain = UserPool.AddDomain("PadissoDomain", new UserPoolDomainOptions
                 {
-                    DomainName = cognitoDomainHost,
-                    Certificate = Certificate.FromCertificateArn(this, "CognitoDomainCert", cognitoDomainCertArn),
-                },
-            });
+                    CustomDomain = new CustomDomainOptions
+                    {
+                        DomainName = cognitoDomainHost,
+                        Certificate = Certificate.FromCertificateArn(this, "CognitoDomainCert", cognitoDomainCertArn),
+                    },
+                });
+            }
 
             UserPoolClient = UserPool.AddClient("PadissoAppClient", new UserPoolClientOptions
             {
@@ -541,12 +594,15 @@ namespace Padi.Services.Authentication
                 ExportName = "PadissoUserPoolClientId",
             });
 
-            new CfnOutput(this, "UserPoolDomain", new CfnOutputProps
+            if (UserPoolDomain != null)
             {
-                Value = UserPoolDomain.DomainName,
-                Description = "Cognito Hosted UI Domain",
-                ExportName = "PadissoUserPoolDomain",
-            });
+                new CfnOutput(this, "UserPoolDomain", new CfnOutputProps
+                {
+                    Value = UserPoolDomain.DomainName,
+                    Description = "Cognito Hosted UI Domain",
+                    ExportName = "PadissoUserPoolDomain",
+                });
+            }
 
             new CfnOutput(this, "RequestMagicLinkUrl", new CfnOutputProps
             {

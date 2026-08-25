@@ -1,7 +1,7 @@
 # PADISSO architecture
 
-Three views of the same system: what runs in AWS, how the code is layered, and how the
-two non-obvious flows actually sequence.
+Five views of the same system: what runs in AWS, how identity is modelled, how the code is
+layered, and how the two non-obvious flows sequence.
 
 ---
 
@@ -10,13 +10,13 @@ two non-obvious flows actually sequence.
 ```mermaid
 flowchart LR
     subgraph client["Browser — web/ (React 19 + Vite + Amplify v6)"]
-        UI["Sign-up · Confirm · Login<br/>Passwordless · Magic link<br/>Passkeys · Dashboard"]
+        UI["Sign-up · Confirm · Login · Forgot password<br/>Passwordless · Magic link · Passkeys<br/>Dashboard · Change email · Change username"]
     end
 
     subgraph aws["AWS — us-west-2"]
         subgraph idp["Amazon Cognito"]
-            POOL["User Pool<br/>padi-sso-poc-user-pool<br/>username sign-in, case-insensitive<br/>feature plan: essentials"]
-            DOMAIN["Custom domain<br/>auth-stage-v2.padi.com"]
+            POOL["User Pool<br/>padi-sso-poc-user-pool<br/>opaque UUID username +<br/>mutable preferred_username alias<br/>case-insensitive · essentials"]
+            DOMAIN["Custom domain<br/>auth-poc-stage-v2.padi.com"]
         end
 
         subgraph triggers["Cognito trigger Lambdas (.NET 10, ARM-free x64, 30s)"]
@@ -24,6 +24,7 @@ flowchart LR
             CREATE["CreateAuthChallenge"]
             VERIFYC["VerifyAuthChallenge"]
             POSTAUTH["PostAuthentication"]
+            POSTCONF["PostConfirmation"]
             EMAILSENDER["CustomEmailSender"]
         end
 
@@ -51,7 +52,10 @@ flowchart LR
     POOL --> CREATE
     POOL --> VERIFYC
     POOL --> POSTAUTH
+    POOL --> POSTCONF
     POOL -->|"KMS-encrypted code"| EMAILSENDER
+
+    POSTCONF -->|"custom:signup_username<br/>→ preferred_username"| POOL
 
     UI -->|"POST /request-link"| REQ
     UI -->|"GET /verify?token"| VER
@@ -78,7 +82,53 @@ but is not wired to the pool.
 
 ---
 
-## 2. Code layers
+## 2. Identity model
+
+Three identifiers, only one of which the user ever types. This is the part most likely to
+be misread by someone new to the codebase.
+
+| Identifier | Mutable | Who sees it | Role |
+|---|---|---|---|
+| `sub` | Never | Nobody | Cognito's internal id. Stable across everything |
+| `username` | Never | Nobody | An opaque UUID minted at sign-up. Cognito fixes it at creation |
+| `preferred_username` | **Yes** | The user | The name they type to sign in. Unique pool-wide |
+| `email` | Yes | The user | A plain attribute — **not** an alias, so not unique |
+
+Cognito's `username` cannot be changed after a user is created, so it cannot be the name
+anyone types. `preferred_username` is configured as an **alias attribute**, which makes it a
+sign-in identifier the user can update.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as Browser
+    participant C as Cognito
+    participant P as PostConfirmation
+
+    Note over U: user picks "minh9"
+    U->>C: signUp(username: "a7f3e2c1-…",<br/>custom:signup_username: "minh9")
+    Note over U,C: preferred_username is rejected here —<br/>Cognito forbids it in SignUp while it is an alias,<br/>so the chosen name is parked in a custom attribute
+    C-->>U: CONFIRM_SIGN_UP
+    Note over U: UUID kept in localStorage —<br/>no alias exists yet, so it is the<br/>only way to reach the account
+    U->>C: confirmSignUp(username: "a7f3e2c1-…", code)
+    C->>P: PostConfirmation trigger
+    P->>C: AdminUpdateUserAttributes<br/>preferred_username = "minh9"
+    U->>C: signIn("minh9") ✓
+
+    Note over U,C: later
+    U->>C: updateUserAttributes(preferred_username: "minh-new")
+    U->>C: signIn("minh-new") ✓ — "minh9" is released
+```
+
+The gap between sign-up and confirmation is the sharp edge: the account has no alias yet, so
+the UUID is the only identifier `confirmSignUp` and `resendSignUpCode` accept — and the user
+has never seen it. `web/src/pending-signup.ts` holds it in `localStorage` so a reload or a
+login-page redirect recovers. Confirming on a different device is not possible; the user
+signs up again, and the chosen name is still free because it never became an alias.
+
+---
+
+## 3. Code layers
 
 Dependencies point inward only. Nothing in `Domain` or `Application` references an AWS SDK.
 
@@ -89,6 +139,7 @@ flowchart TD
         L2["CreateAuthChallenge"]
         L3["VerifyAuthChallenge"]
         L4["PostAuthentication"]
+        L8["PostConfirmation"]
         L5["CustomEmailSender"]
         L6["RequestMagicLink"]
         L7["VerifyMagicLink"]
@@ -104,7 +155,7 @@ flowchart TD
         INot["Notifications<br/>SES / SNS delivery"]
     end
 
-    APP["src/Application<br/>use cases + ports<br/>CustomAuthChallenge · SendCognitoMessage<br/>RecordSignIn · RequestMagicLink · RedeemMagicLink"]
+    APP["src/Application<br/>use cases + ports<br/>CustomAuthChallenge · SendCognitoMessage<br/>RecordSignIn · AssignPreferredUsername<br/>RequestMagicLink · RedeemMagicLink"]
     DOM["src/Domain<br/>MagicLinkToken · DeliveryChannel<br/>CognitoTriggerSource · SharedSecret"]
 
     CDK["src/Padisso<br/>CDK stack — provisions everything above"]
@@ -122,6 +173,8 @@ flowchart TD
     L7 --> ICog
     L7 --> IDdb
 
+    L8 --> ICog
+    L8 --> ICore
     L4 --> ICore
     L5 --> ICore
     L6 --> ICore
@@ -140,15 +193,27 @@ flowchart TD
 ```
 
 **Why infrastructure is split per concern rather than one project:** each Lambda pulls in
-only the AWS SDKs it uses. `DefineAuthChallenge`, `CreateAuthChallenge` and
-`VerifyAuthChallenge` reference `Application` alone and carry no SDK at all;
-`PostAuthentication` takes `Infrastructure.Cognito` but not `Configuration`, so the Systems
-Manager SDK stays out of five of the seven bundles. Merging these projects would add tens of
-megabytes to every function.
+only the AWS SDKs it uses. The published bundle sizes show what that buys:
+
+| Lambda | References | Size |
+|---|---|---|
+| `DefineAuthChallenge` | `Application` only | 249 KB |
+| `CreateAuthChallenge` | `Application` only | 245 KB |
+| `VerifyAuthChallenge` | `Application` only | 245 KB |
+| `PostAuthentication` | `+ Cognito`, `Core` | 5.0 MB |
+| `PostConfirmation` | `+ Cognito`, `Core` | 5.0 MB |
+| `VerifyMagicLink` | `+ DynamoDb` | 7.5 MB |
+| `RequestMagicLink` | `+ Notifications` | 9.4 MB |
+| `CustomEmailSender` | `+ Configuration`, `Kms`, `Messaging` | 30 MB |
+
+The three challenge triggers carry no AWS SDK at all. `Configuration` is separate from
+`Core` precisely so the Systems Manager SDK reaches only `CustomEmailSender` — one bundle
+out of eight. Collapsing infrastructure into a single project would push every function
+toward that 30 MB.
 
 ---
 
-## 3. Magic-link flow
+## 4. Magic-link flow
 
 The bespoke part — a custom auth flow driven server-side, so the browser never holds a
 Cognito secret.
@@ -164,10 +229,10 @@ sequenceDiagram
     participant V as VerifyMagicLink
 
     U->>R: POST /request-link { username }
-    R->>C: AdminGetUser
+    R->>C: AdminGetUser (accepts the alias)
     Note over R: unknown user or no destination<br/>→ silent 200 (no enumeration)
-    R->>R: issue token, hash it
-    R->>D: put { hash, sub, expiresAt = now + 15m }
+    R->>R: issue token against the *immutable*<br/>username, not the alias supplied
+    R->>D: put { hash, username, expiresAt = now + 15m }
     R->>E: send link containing raw token
     R-->>U: 200 (always)
 
@@ -185,9 +250,13 @@ The three challenge Lambdas exist only to satisfy Cognito's custom-auth contract
 check already happened in `VerifyMagicLink`. `ADMIN_PROOF` is the shared secret that lets
 them distinguish a server-initiated flow from a client-initiated one.
 
+Storing the immutable username rather than the caller's input matters now that usernames are
+mutable: a user who changes their name between requesting a link and clicking it would
+otherwise hold a token pointing at an alias that no longer resolves.
+
 ---
 
-## 4. Email delivery
+## 5. Email delivery
 
 Every Cognito-originated email — sign-up confirmation, password reset, passwordless OTP,
 MFA — leaves through `CustomEmailSender`, not Cognito's built-in mailer.
@@ -213,4 +282,8 @@ sequenceDiagram
 
 There is **no fallback**: if the messaging call fails, sign-up, password reset and email OTP
 all fail together. The trigger source name selects the template — `CustomEmailSender_SignUp`
-becomes definition key `SignUp`.
+becomes definition key `SignUp`, falling back to `Default` when that key is unset.
+
+On `CustomEmailSender_UpdateUserAttribute` — the change-email flow — `userAttributes.email`
+carries the user's **new** address, so the code reaches the address being verified rather
+than the one still active for sign-in. Confirmed against the live pool.
