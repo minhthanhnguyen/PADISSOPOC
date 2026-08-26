@@ -1,0 +1,77 @@
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Padi.Services.Authentication.Api.Contracts;
+using Padi.Services.Authentication.Application.Abstractions;
+using Padi.Services.Authentication.Application.Users;
+
+namespace Padi.Services.Authentication.Api.Controllers;
+
+/// <summary>
+/// Self-service registration, reachable without a token — a user cannot have one before
+/// their account exists.
+///
+/// The <c>/public</c> prefix is not decoration. API Gateway maps it as its own resource with
+/// no authorizer, while everything else sits behind the Cognito authorizer, so the
+/// unauthenticated surface is exactly the routes under this prefix and can be reviewed by
+/// looking at one place. Do not add a route here that acts on an existing account.
+///
+/// Every action calls Cognito's own unauthenticated operations with the app client id, so a
+/// caller can do nothing here they could not do against Cognito directly. The exception is
+/// the username availability check inside sign-up, which uses the service's IAM role.
+/// </summary>
+[ApiController]
+[Route("public")]
+[AllowAnonymous]
+[Produces("application/json")]
+public sealed class RegistrationController(
+    RegisterUser registerUser,
+    IUserRegistration registration,
+    PoolContext pool) : ControllerBase
+{
+    [HttpPost("signup")]
+    [ProducesResponseType(typeof(RegistrationStartedResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<RegistrationStartedResponse>> SignUp(
+        [FromBody] RegisterRequest request, CancellationToken ct)
+    {
+        var result = await registerUser.ExecuteAsync(
+            new RegisterUserCommand(
+                UserPoolId: pool.UserPoolId,
+                Username: request.Username,
+                Password: request.Password,
+                Email: request.Email,
+                GivenName: request.GivenName,
+                FamilyName: request.FamilyName),
+            ct);
+
+        // No Location header: the account is not addressable by an anonymous caller, and
+        // pointing at an admin route the caller cannot read would be misleading.
+        return StatusCode(
+            StatusCodes.Status201Created,
+            new RegistrationStartedResponse(result.AccountId, result.Confirmed, result.CodeDestination));
+    }
+
+    [HttpPost("signup/confirm")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> Confirm(
+        [FromBody] ConfirmRegistrationRequest request, CancellationToken ct)
+    {
+        await registration.ConfirmAsync(request.AccountId.Trim(), request.Code.Trim(), ct);
+        return NoContent();
+    }
+
+    [HttpPost("signup/resend")]
+    [ProducesResponseType(typeof(CodeResentResponse), StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<CodeResentResponse>> Resend(
+        [FromBody] ResendCodeRequest request, CancellationToken ct)
+    {
+        var destination = await registration.ResendCodeAsync(request.AccountId.Trim(), ct);
+        return Accepted(new CodeResentResponse(destination));
+    }
+}

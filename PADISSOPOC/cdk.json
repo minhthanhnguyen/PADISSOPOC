@@ -32,6 +32,19 @@
       "http://localhost:5173",
       "https://account.global-np.padi.com"
     ],
+
+    "apiName": "padi-sso-poc-api",
+    "apiStageName": "v1",
+    "apiDomainName": "api.global-np.padi.com",
+    "apiBasePath": "p/padi-auth-poc",
+    "apiEndpointType": "regional",
+    "apiAllowedOrigins": [
+      "http://localhost:5173",
+      "https://account.global-np.padi.com"
+    ],
+    "apiThrottleRatePerSecond": 50,
+    "apiThrottleBurst": 100,
+    "adminGroupName": "padi-sso-admins",
     "@aws-cdk/aws-signer:signingProfileNamePassedToCfn": true,
     "@aws-cdk/aws-ecs-patterns:secGroupsDisablesImplicitOpenListener": true,
     "@aws-cdk/aws-lambda:recognizeLayerVersion": true,

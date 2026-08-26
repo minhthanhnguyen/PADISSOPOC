@@ -25,6 +25,7 @@ src/
     Cognito/                    CustomAuthChallenge, SendCognitoMessage, RecordSignIn,
                                 AssignPreferredUsername
     MagicLink/                  RequestMagicLink, RedeemMagicLink
+    Users/                      RegisterUser, ChangeUsername, SetUserUsername
   Infrastructure/
     Core/                       SystemClock, ConsoleAuditLog, LambdaConfiguration  (no AWS SDK)
     Configuration/              AddParameterStore()                    (Systems Manager SDK)
@@ -37,7 +38,8 @@ src/
     DefineAuthChallenge/  CreateAuthChallenge/  VerifyAuthChallenge/
     PostAuthentication/   PostConfirmation/     CustomEmailSender/
     RequestMagicLink/     VerifyMagicLink/
-  Padisso/                      CDK app — PadiSsoPocStack
+  Api/                          ASP.NET Core management API, hosted in Lambda
+  Padisso/                      CDK app — PadiSsoPocStack, PadiSsoApiStack
 web/                            React reference client (Vite + TypeScript)
 publish-lambdas.ps1             Publishes all Lambda projects
 cdk.json                        Environment configuration (context block)
@@ -206,6 +208,77 @@ A PostAuthentication trigger that throws **fails the user's sign-in**. Both oper
 
 ---
 
+## Management API
+
+An ASP.NET Core app in `src/Api`, hosted in Lambda and fronted by API Gateway. It runs unchanged under Kestrel locally — `AddAWSLambdaHosting` is a no-op outside Lambda — so the whole surface is testable without deploying.
+
+Conventional MVC controllers, not minimal APIs:
+
+```
+src/Api/
+  Program.cs                  auth, DI, JSON options
+  Authorization.cs            policies + the client-id requirement
+  HttpContextExtensions.cs    access-token extraction
+  DirectoryExceptionHandler.cs
+  Contracts/                  Requests.cs, Responses.cs
+  Controllers/                HealthController, RegistrationController,
+                              MeController, AdminUsersController
+```
+
+Request models carry data annotations, so `[ApiController]` returns a 400 with `ValidationProblemDetails` before an action runs — a controller only ever sees a structurally valid body. Rules needing domain knowledge, such as the Cognito username pattern, still live in the Application layer. Responses are declared types rather than anonymous objects, and `[ProducesResponseType]` records the status codes each action can return.
+
+The gateway is **regional**, matching the endpoint type of the custom domain it maps under — the two have to agree. Clients resolve straight to the endpoint in `us-west-2` rather than through a CloudFront point of presence, and header names are passed through as-is.
+
+WAF attaches to the API *stage* with a **REGIONAL**-scoped WAFv2 ACL in the API's region. That is true of either endpoint type, so the reason REST was chosen over HTTP API does not depend on this setting.
+
+Two route groups, separated by **authority rather than by feature**:
+
+| Route | Policy | |
+|---|---|---|
+| `GET /health` | anonymous | Liveness. Reveals nothing |
+| `POST /public/signup` | anonymous | Creates an unconfirmed account; returns `accountId` |
+| `POST /public/signup/confirm` | anonymous | Confirms with the emailed code |
+| `POST /public/signup/resend` | anonymous | Sends a replacement code |
+| `GET /me` | `caller` | Profile from the caller's own token |
+| `PATCH /me` | `caller` | `given_name`, `family_name` |
+| `PUT /me/username` | `caller` | `preferred_username`, validated |
+| `PUT /me/email` | `caller` | Starts verification; 202 with masked destination |
+| `POST /me/email/confirm` | `caller` | Completes it |
+| `GET /admin/users` | `administrator` | List / filter, paginated |
+| `GET /admin/users/{u}` | `administrator` | One user. `accountId` is the immutable id, `username` the mutable alias |
+| `PATCH /admin/users/{u}/attributes` | `administrator` | Set attributes |
+| `PUT /admin/users/{u}/username` | `administrator` | Set `preferred_username`, validated |
+| `POST /admin/users/{u}/enable`, `/disable` | `administrator` | |
+| `POST /admin/users/{u}/reset-password` | `administrator` | Forces reset, sends a code |
+| `GET`/`PUT`/`DELETE /admin/users/{u}/groups[/{g}]` | `administrator` | Group membership |
+
+### The public surface
+
+Registration cannot sit behind the authorizer — a user has no token before their account exists. Those routes live under a single `/public` prefix, mapped in API Gateway as **its own resource with `AuthorizationType.NONE`** while everything else stays behind the Cognito authorizer. The unauthenticated surface is therefore exactly the routes under that prefix, reviewable by looking at `RegistrationController` and one block in the stack. *Nothing under `/public` may act on an existing account.*
+
+Every action calls Cognito's own unauthenticated operations (`SignUp`, `ConfirmSignUp`, `ResendConfirmationCode`) with the app client id and no IAM credentials, so an anonymous caller can do nothing here they could not already do against Cognito directly. The one exception is the username availability check inside sign-up, which uses `ListUsers` under the service role.
+
+Sign-up returns an **`accountId`** the client must keep until confirmation. An unconfirmed account has no `preferred_username` yet, so that opaque id is the only value Cognito will accept for confirming or resending — the name the user chose will not work. This is the same constraint `web/src/pending-signup.ts` works around in the browser; the API now makes it explicit in the contract.
+
+The availability check exists because the alias is only assigned at confirmation. Without it two people can register the same name and the second is rejected *at confirmation*, with the account already created and no way to change the staged name. Checking up front is a deliberate disclosure — a sign-up form has to say whether a name is taken — but it is confined to sign-up attempts rather than exposed as a standalone lookup, so each guess costs a rate-limited request with side effects. A race between two simultaneous sign-ups is still possible and still fails at confirmation.
+
+### The two authorities
+
+The split is the point of the design, not a convenience.
+
+**`/me` uses the caller's own access token.** Requests are forwarded to Cognito as the user, so Cognito applies the **app client's attribute write permissions** to every call. A bug in this API's authorization cannot let a user write an attribute the app client is not allowed to write.
+
+**`/admin` uses the service's IAM role.** `Admin*` calls bypass app client permissions entirely. That is why admin routes are gated on membership of the `padi-sso-admins` Cognito group, why every one is audited *before* it acts, and why the IAM policy grants only the nine actions the code actually calls — `AdminDeleteUser` and `AdminSetUserPassword` are deliberately absent.
+
+No `/me` route takes a user identifier. There is no route shape that lets a caller name someone else's account, so even a misconfigured policy cannot turn self-service into administration.
+
+### Guardrails
+
+- **`email_verified` cannot be set through the API**, along with `sub`, `phone_number_verified`, `cognito:username` and `identities`. Writing `email_verified: true` would let an administrator mark any address as verified and capture account recovery without ever proving control of the mailbox.
+- **`preferred_username` is rejected by the generic attribute route** and must go through the dedicated username route, so it cannot bypass [`UsernameRules`](#username-characters).
+- **The token is validated twice** — once by the gateway's Cognito authorizer, once by the API. The second check keeps the API safe if it is ever reached directly, and is what populates the claims the policies read.
+- **Cognito access tokens carry `client_id`, not `aud`**, so audience validation is off and the client id is checked by an explicit requirement instead. Without it, a token minted by any other app client on the same pool would be accepted.
+
 ## Post-confirmation trigger
 
 Fires once, after a user confirms their account. Its only job is to promote `custom:signup_username` into `preferred_username` — see [Mutable usernames](#mutable-usernames) for why the value cannot be set at sign-up.
@@ -370,6 +443,54 @@ All environment-specific values live in the `context` block of `cdk.json`.
 | `magicLinkAllowedOrigins` | CORS origins permitted to call the Function URLs |
 | `messagingEmailUrl` | PADI messaging service transactional email endpoint |
 | `messagingTokenUrl` | OAuth2 token endpoint for the messaging service |
+| `apiName` | REST API name |
+| `apiStageName` | Deployment stage — appears in the `execute-api` URL, hidden behind a custom domain |
+| `apiDomainName` | An **existing** custom domain to attach to. Empty leaves the API on its `execute-api` URL |
+| `apiBasePath` | The path to claim under that domain, e.g. `p/padi-auth-poc`. Multi-level is supported. Required whenever `apiDomainName` is set |
+| `apiEndpointType` | `edge` or `regional`. Must match the custom domain's own endpoint type |
+| `apiAllowedOrigins` | CORS origins permitted to call the API |
+| `apiThrottleRatePerSecond` | Stage throttle, steady-state |
+| `apiThrottleBurst` | Stage throttle, burst |
+| `adminGroupName` | Cognito group whose members may call `/admin` routes |
+
+### Attaching to the custom domain
+
+The API does **not** own a domain. It claims a base path under one that already exists:
+
+```
+https://api.global-np.padi.com/p/padi-auth-poc/public/signup
+                                              └── the API sees /public/signup
+```
+
+API Gateway strips the mapped path before matching resources, so routes are written as if the API were at a domain root and nothing in the code changes when the path does.
+
+Only an `AWS::ApiGatewayV2::ApiMapping` is created — no domain, no certificate. Those belong to whoever owns the domain, and `cdk destroy` removes the mapping without touching it. That is why `apiDomainCertArn` no longer exists.
+
+**The V2 resource is required, not a preference.** `apiBasePath` has two segments, and `AWS::ApiGateway::BasePathMapping` only supports one. AWS is explicit: *"To create API mappings with multiple levels, you must use `AWS::ApiGatewayV2`."* The V1 resource synthesizes a multi-level path without complaint and fails at deploy, so this is not something CDK will catch for you. Multi-level mappings also require the domain to be **Regional with the TLS 1.2 security policy** — `api.global-np.padi.com` is both.
+
+Consequences of a multi-level mapping worth knowing:
+
+- **Header names are lowercased.** *"If you create an API mappings with multiple levels, API Gateway converts all header names to lowercase."* ASP.NET Core matches headers case-insensitively so this API is unaffected, but anything comparing raw header names would be.
+- **Longest matching path wins.** With `p/padi-auth-poc` and a hypothetical `p` mapping on the same domain, requests to `/p/padi-auth-poc/...` reach this API and `/p/anything-else` reaches the other.
+- **Characters are restricted** to letters, numbers and `$-_.+!*'()/`, max 300. The stack validates this at synth rather than letting the deploy fail.
+- **The domain's routing mode** must be `ROUTING_RULE_THEN_API_MAPPING` or `API_MAPPING_ONLY` for API mappings to apply at all.
+
+Two things to get right:
+
+- **`apiBasePath` cannot be empty while `apiDomainName` is set.** An empty base path maps to the *root* of the domain, capturing every request that matches no other mapping — on a shared domain that hijacks it. The stack throws at synth rather than let this happen by omission.
+- **Endpoint types must match.** A custom domain has its own endpoint type and `apiEndpointType` has to agree with it. `api.global-np.padi.com` is `REGIONAL`, so the API is too. Check before changing either:
+
+  ```bash
+  aws apigateway get-domain-name --domain-name api.global-np.padi.com --region us-west-2
+  ```
+
+- **The path must be free.** The domain is shared — its tags name `padi-api` / team `learning` as owner — so other services already hold mappings on it. A collision fails the deploy. List what is taken (v2, so multi-level mappings are shown):
+
+  ```bash
+  aws apigatewayv2 get-api-mappings --domain-name api.global-np.padi.com --region us-west-2
+  ```
+
+Leave `apiDomainName` empty and the mapping is skipped entirely — the API is reachable at its `execute-api` URL, which is the current default.
 
 ### SSM Parameter Store
 
@@ -434,20 +555,50 @@ Publish the Lambdas first — CDK packages their build output as assets, so this
 pwsh -File ./publish-lambdas.ps1
 ```
 
-Then:
+That script also publishes `src/Api`, which `PadiSsoApiStack` packages as an asset.
 
-```bash
-npx cdk synth
+### Naming the stack
+
+The app defines **two** stacks — `PadiSsoPocStack` and `PadiSsoApiStack` — so the CLI will not guess:
+
+> Since this app includes more than a single stack, specify which stacks to use (wildcards are supported) or specify `--all`
+
+`deploy` and `destroy` refuse to run without a selection. Name a stack, pass `--all`, or use a wildcard such as `'PadiSso*'` — quoted, so the shell does not expand it.
+
+`synth` is the exception: with no stack it still succeeds and writes **both** templates to `cdk.out`, and only declines to print one —
+
+```
+Supply a stack id (PadiSsoPocStack, PadiSsoApiStack) to display its template.
 ```
 
+So this is enough to produce templates, and `--quiet` just suppresses that note:
+
 ```bash
-npx cdk deploy
+npx cdk synth --quiet
 ```
 
-Inspect pending changes before deploying against an existing pool:
+To print one template, name it:
 
 ```bash
-npx cdk diff
+npx cdk synth PadiSsoApiStack
+```
+
+Inspect pending changes before deploying:
+
+```bash
+npx cdk diff --all
+```
+
+Deploy. `PadiSsoApiStack` takes the pool by reference, so CDK orders them — pool first — and `--all` is enough:
+
+```bash
+npx cdk deploy --all
+```
+
+To deploy just one:
+
+```bash
+npx cdk deploy PadiSsoApiStack
 ```
 
 ### Replacing the user pool
@@ -585,6 +736,11 @@ This is a proof of concept. Before production:
 - **The V2 pool is deployed but the mutable-username flows are untested.** Sign-up, password reset and change email were proven against the *previous* pool, before `preferred_username` existed. The triggers and messaging path are unchanged so they should carry over, but nothing in the new design has been exercised. Test sign-up first: it now spans `signUp` → `PostConfirmation` → alias assignment, the longest untried path in the system, and the only one that can leave an account unreachable if it fails.
 - **The previous pool is orphaned, not deleted.** `RemovalPolicy.RETAIN` means CloudFormation left it behind when the logical ID changed. It still holds the old test accounts and the `auth-stage-v2.padi.com` custom domain, and it still bills for anything the feature plan charges. Delete it once nothing depends on it.
 - **Confirmation is browser-bound.** Between sign-up and confirmation an account has no `preferred_username`, so the opaque UUID is the only identifier Cognito accepts, and it lives in `localStorage`. A user who abandons confirmation and returns on another device cannot finish; they sign up again, and the chosen name is still free. Acceptable for a POC — a production flow should confirm by emailed link carrying the id, or auto-confirm via `PreSignUp` and verify email separately.
+- **The management API has never served an authenticated request.** Startup, routing, and rejection of missing and malformed tokens are verified locally; nothing has been exercised with a real Cognito token, because the new pool has no users yet and no one is in `padi-sso-admins`. Both authorization policies and every Cognito call are unproven.
+- **No AWS WAF is attached yet, and `/public/signup` is now an unauthenticated write.** REST API was chosen specifically because it *can* carry WAF, but no web ACL is associated. Stage throttling (50 rps / 100 burst) is the only limit and it is per-stage, not per-caller — so one client can consume the whole budget. Sign-up is the endpoint that makes this urgent: each call creates a Cognito user *and* sends an email through the messaging service, so abuse costs money and sender reputation, not just capacity. Attach a web ACL with a rate-based rule, and consider a CAPTCHA before opening it to the internet.
+- **A username can still be lost between sign-up and confirmation.** The availability check narrows the window but does not close it; two simultaneous sign-ups for the same name both succeed, and the second fails at confirmation with the account already created. Recovery today is to register again.
+- **The base path `auth` is unverified.** `api.global-np.padi.com` is shared with other services, and a mapping that collides with an existing one fails the deploy. Run `get-base-path-mappings` against the domain before deploying, and change `apiBasePath` if `auth` is taken.
+- **Magic-link Function URLs are still `AuthType.NONE` and outside the gateway.** The API now provides the WAF-capable front door the README has wanted for them, but `/request-link` and `/verify` have not been moved behind it.
 - **Password policy is below current guidance** — 6 characters is Cognito's floor and short of the 8-character minimum in NIST SP 800-63B. The composition rules are also an unusual pairing: uppercase and lowercase are mandatory while digits are not, which pushes users toward predictable shapes like `Passwd` without adding real entropy. Prefer a longer minimum over composition requirements, and enable threat protection (requires the `plus` feature plan) so credentials are checked against known-breached passwords.
 - **The messaging integration is proven for the account lifecycle, not for every trigger source.** Live `SignUp`, `ForgotPassword` and `UpdateUserAttribute` deliveries have each exercised the whole chain — Parameter Store credentials, the `client_credentials` token request with HTTP Basic client authentication, `EmailProxyRequest` attribute names and PascalCase serialisation, and Encryption SDK code decryption. Register, recover and change-email all worked end to end — though against the pool that `PadissoUserPoolV2` replaces, so they need one confirmation run after the new pool is deployed. Still unexercised: `Authentication`, `ResendCode`, `VerifyUserAttribute`, `AdminCreateUser`, `AccountTakeOverNotification`. These differ only in template key, so the remaining risk is a missing or wrong `Messaging:Definitions:*` entry, not a broken integration — and the `Default` fallback covers any of them that lack a specific key. `Authentication` is the next one worth a live test: the passwordless email-OTP flow depends on it. Because `CustomEmailSender` has no fallback, roll back by removing it from `LambdaTriggers`.
 - **`META_COUNTRY_CODE` is hardcoded to `US`.** It should derive from a user attribute or `ClientMetadata` once the requirement is clear.

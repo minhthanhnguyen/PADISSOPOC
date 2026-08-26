@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AWSProjectType>Lambda</AWSProjectType>
+    <AssemblyName>Api</AssemblyName>
+    <RootNamespace>Padi.Services.Authentication.Api</RootNamespace>
+    <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
+    <PublishReadyToRun>true</PublishReadyToRun>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Hosts the ASP.NET Core pipeline inside Lambda behind API Gateway's REST (v1)
+         proxy payload. The same Program.cs still runs as a normal Kestrel app locally. -->
+    <PackageReference Include="Amazon.Lambda.AspNetCoreServer.Hosting" Version="1.7.4" />
+    <PackageReference Include="AWSSDK.CognitoIdentityProvider" Version="4.0.103.1" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Application\Application.csproj" />
+    <ProjectReference Include="..\Infrastructure\Core\Core.csproj" />
+    <ProjectReference Include="..\Infrastructure\Cognito\Cognito.csproj" />
+  </ItemGroup>
+</Project>

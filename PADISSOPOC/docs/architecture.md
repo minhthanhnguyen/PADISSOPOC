@@ -3,6 +3,10 @@
 Five views of the same system: what runs in AWS, how identity is modelled, how the code is
 layered, and how the two non-obvious flows sequence.
 
+Two CDK stacks: `PadiSsoPocStack` (the pool and its triggers) and `PadiSsoApiStack` (the
+management API behind API Gateway). The API stack takes the pool by reference, so CDK orders
+the deployments.
+
 ---
 
 ## 1. Deployed architecture
@@ -33,6 +37,11 @@ flowchart LR
             VER["VerifyMagicLink"]
         end
 
+        subgraph apigw["PadiSsoApiStack — separate stack"]
+            GW["API Gateway REST · regional<br/>/public/* → no authorizer<br/>everything else → Cognito authorizer<br/>api.global-np.padi.com/p/padi-auth-poc<br/>stage throttle"]
+            API["Api — ASP.NET Core MVC in Lambda<br/>Registration · Me · AdminUsers"]
+        end
+
         DDB[("DynamoDB<br/>padi-sso-poc-magic-links<br/>single-use, TTL")]
         KMS["KMS key<br/>alias/padi-sso-poc-cognito-codes"]
         SSM["SSM Parameter Store<br/>/padi/services/authentication"]
@@ -59,6 +68,13 @@ flowchart LR
 
     UI -->|"POST /request-link"| REQ
     UI -->|"GET /verify?token"| VER
+
+    UI -->|"Bearer access token"| GW
+    UI -->|"/public/signup · confirm<br/>no token — none exists yet"| GW
+    GW -->|"authorizer validates,<br/>then proxy integration"| API
+    GW -.->|"validates token against"| POOL
+    API -->|"/me — caller's access token"| POOL
+    API -->|"/admin — service IAM role"| POOL
 
     EMAILSENDER -->|decrypt| KMS
     EMAILSENDER -->|"send templated email"| MSG
@@ -134,6 +150,8 @@ Dependencies point inward only. Nothing in `Domain` or `Application` references 
 
 ```mermaid
 flowchart TD
+    WEBAPI["src/Api — ASP.NET Core MVC<br/>controllers + contracts<br/>auth policies"]
+
     subgraph lam["src/Lambdas — thin adapters + composition roots"]
         L1["DefineAuthChallenge"]
         L2["CreateAuthChallenge"]
@@ -155,10 +173,10 @@ flowchart TD
         INot["Notifications<br/>SES / SNS delivery"]
     end
 
-    APP["src/Application<br/>use cases + ports<br/>CustomAuthChallenge · SendCognitoMessage<br/>RecordSignIn · AssignPreferredUsername<br/>RequestMagicLink · RedeemMagicLink"]
+    APP["src/Application<br/>use cases + ports<br/>CustomAuthChallenge · SendCognitoMessage<br/>RecordSignIn · AssignPreferredUsername<br/>RequestMagicLink · RedeemMagicLink<br/>ChangeUsername · SetUserUsername"]
     DOM["src/Domain<br/>MagicLinkToken · DeliveryChannel<br/>CognitoTriggerSource · SharedSecret"]
 
-    CDK["src/Padisso<br/>CDK stack — provisions everything above"]
+    CDK["src/Padisso<br/>CDK app — PadiSsoPocStack, PadiSsoApiStack"]
 
     L1 --> APP
     L2 --> APP
@@ -179,6 +197,10 @@ flowchart TD
     L5 --> ICore
     L6 --> ICore
     L7 --> ICore
+
+    WEBAPI --> APP
+    WEBAPI --> ICog
+    WEBAPI --> ICore
 
     ICore --> APP
     ICfg --> ICore
