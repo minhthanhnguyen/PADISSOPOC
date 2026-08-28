@@ -22,6 +22,10 @@ public sealed class DirectoryExceptionHandler(IAuditLog audit) : IExceptionHandl
             DirectoryValidationException e => (StatusCodes.Status400BadRequest, e.Message),
             AliasAlreadyTakenException e => (StatusCodes.Status409Conflict, e.Message),
             UserNotFoundInDirectoryException e => (StatusCodes.Status404NotFound, e.Message),
+            AuthenticationFailedException e => (StatusCodes.Status401Unauthorized, e.Message),
+            // 403 rather than 401: the credentials were accepted, the account is not usable
+            // yet. The client keys on this to send the user back to confirmation.
+            AccountNotConfirmedException e => (StatusCodes.Status403Forbidden, e.Message),
             _ => (0, ""),
         };
 

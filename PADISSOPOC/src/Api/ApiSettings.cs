@@ -12,12 +12,14 @@ public sealed class ApiSettings
     private const string DefaultRegion = "us-west-2";
     private const string DefaultAdminGroup = "padi-sso-admins";
 
-    private ApiSettings(string region, string userPoolId, string clientId, string adminGroup)
+    private ApiSettings(
+        string region, string userPoolId, string clientId, string adminGroup, string[] allowedOrigins)
     {
         Region = region;
         UserPoolId = userPoolId;
         ClientId = clientId;
         AdminGroup = adminGroup;
+        AllowedOrigins = allowedOrigins;
     }
 
     public string Region { get; }
@@ -28,6 +30,15 @@ public sealed class ApiSettings
 
     public string AdminGroup { get; }
 
+    /// <summary>
+    /// Browser origins allowed to call the API.
+    ///
+    /// API Gateway's CORS configuration only answers the OPTIONS preflight — with a Lambda
+    /// proxy integration the actual response carries whatever headers this app sets, so
+    /// without CORS here a browser rejects every real response despite a passing preflight.
+    /// </summary>
+    public string[] AllowedOrigins { get; }
+
     /// <summary>The token issuer this pool signs with. Also the OIDC discovery authority.</summary>
     public string Issuer => $"https://cognito-idp.{Region}.amazonaws.com/{UserPoolId}";
 
@@ -35,5 +46,7 @@ public sealed class ApiSettings
         region: configuration["AWS_REGION"] ?? DefaultRegion,
         userPoolId: configuration.Require("USER_POOL_ID"),
         clientId: configuration.Require("USER_POOL_CLIENT_ID"),
-        adminGroup: configuration["ADMIN_GROUP"] ?? DefaultAdminGroup);
+        adminGroup: configuration["ADMIN_GROUP"] ?? DefaultAdminGroup,
+        allowedOrigins: (configuration["ALLOWED_ORIGINS"] ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 }

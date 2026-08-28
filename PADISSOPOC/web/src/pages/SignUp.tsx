@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { signUp } from 'aws-amplify/auth';
+import { registerAccount } from '../api-client';
 import { PASSWORD_RULES } from '../auth-config';
 import { rememberAccountId } from '../pending-signup';
 import { USERNAME_RULES, validateUsername } from '../username-rules';
@@ -24,9 +24,8 @@ export default function SignUp() {
     e.preventDefault();
     setError(null);
 
-    // signUp cannot catch a bad name: the account's username is a UUID, so the request
-    // succeeds regardless and the problem only surfaces once PostConfirmation promotes
-    // the staged value into the alias.
+    // The API validates this too; checking here saves a round trip and reports the same
+    // message, since both sides share the rule.
     const usernameProblem = validateUsername(form.username.trim());
     if (usernameProblem) {
       setError(usernameProblem);
@@ -35,35 +34,29 @@ export default function SignUp() {
 
     setBusy(true);
     try {
-      // Cognito's username is immutable, so it cannot be the name the user picked — that
-      // name has to stay changeable. The account gets an opaque id the user never sees,
-      // and the chosen name is parked in custom:signup_username for the PostConfirmation
-      // trigger to promote into preferred_username, the alias they sign in with.
-      const accountId = crypto.randomUUID();
       const chosen = form.username.trim();
 
-      const { nextStep } = await signUp({
-        username: accountId,
+      // Registration goes through the management API rather than Cognito directly. The
+      // opaque account id is minted server-side, so the browser no longer needs to know
+      // that the chosen name is staged in custom:signup_username for the PostConfirmation
+      // trigger — it just receives the id needed to confirm.
+      const result = await registerAccount({
+        username: chosen,
         password: form.password,
-        options: {
-          userAttributes: {
-            email: form.email,
-            given_name: form.givenName,
-            family_name: form.familyName,
-            'custom:signup_username': chosen,
-          },
-        },
+        email: form.email,
+        givenName: form.givenName,
+        familyName: form.familyName,
       });
 
       // Until the account is confirmed the alias does not exist, so this id is the only
       // way to reach it. Remembered here so a reload of /confirm can recover.
-      rememberAccountId(chosen, accountId);
+      rememberAccountId(chosen, result.accountId);
 
-      if (nextStep.signUpStep === 'CONFIRM_SIGN_UP') {
-        navigate(`/confirm?username=${encodeURIComponent(accountId)}&as=${encodeURIComponent(chosen)}`);
-      } else {
-        // No confirmation required (auto-confirmed) — go straight to sign-in.
+      if (result.confirmed) {
+        // Auto-confirmed — no code to enter.
         navigate('/login');
+      } else {
+        navigate(`/confirm?username=${encodeURIComponent(result.accountId)}&as=${encodeURIComponent(chosen)}`);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

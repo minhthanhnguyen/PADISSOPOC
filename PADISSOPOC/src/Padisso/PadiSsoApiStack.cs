@@ -86,6 +86,9 @@ namespace Padi.Services.Authentication
                     ["USER_POOL_ID"] = props.UserPool.UserPoolId,
                     ["USER_POOL_CLIENT_ID"] = props.UserPoolClient.UserPoolClientId,
                     ["ADMIN_GROUP"] = adminGroup,
+                    // The gateway's CORS config only answers preflight; the app has to put
+                    // the header on the real response, so it needs the same origin list.
+                    ["ALLOWED_ORIGINS"] = string.Join(",", allowedOrigins),
                     ["ASPNETCORE_ENVIRONMENT"] = "Production",
                 },
             });
@@ -106,6 +109,8 @@ namespace Padi.Services.Authentication
                     "cognito-idp:AdminListGroupsForUser",
                     "cognito-idp:AdminAddUserToGroup",
                     "cognito-idp:AdminRemoveUserFromGroup",
+                    // Backs /public/login via ADMIN_USER_PASSWORD_AUTH.
+                    "cognito-idp:AdminInitiateAuth",
                 },
                 Resources = new[] { props.UserPool.UserPoolArn },
             }));

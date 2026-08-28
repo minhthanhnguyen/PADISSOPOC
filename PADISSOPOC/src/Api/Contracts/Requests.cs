@@ -72,6 +72,17 @@ public sealed class RegisterRequest
     public string? FamilyName { get; init; }
 }
 
+public sealed class LoginRequest
+{
+    [Required(AllowEmptyStrings = false)]
+    [MaxLength(128)]
+    public string Username { get; init; } = "";
+
+    [Required(AllowEmptyStrings = false)]
+    [MaxLength(256)]
+    public string Password { get; init; } = "";
+}
+
 public sealed class ConfirmRegistrationRequest
 {
     /// <summary>The opaque id returned by sign-up, not the name the user chose.</summary>

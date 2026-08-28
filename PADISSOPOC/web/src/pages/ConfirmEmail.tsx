@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { confirmSignUp, resendSignUpCode } from 'aws-amplify/auth';
+import { confirmRegistration, resendRegistrationCode } from '../api-client';
 import { forgetAccountId, recallAccountId } from '../pending-signup';
 
 const UNKNOWN_ACCOUNT =
@@ -47,18 +47,14 @@ export default function ConfirmEmail() {
 
     setBusy(true);
     try {
-      const { isSignUpComplete } = await confirmSignUp({
-        username: id,
-        confirmationCode: code.trim(),
-      });
-      if (isSignUpComplete) {
-        // Confirmed: the PostConfirmation trigger has assigned preferred_username, so the
-        // chosen name works as a sign-in alias from here and the id is no longer needed.
-        forgetAccountId(chosenName);
-        navigate('/login?confirmed=1');
-      } else {
-        setError('Confirmation did not complete. Check the code and try again.');
-      }
+      // The API answers 204 on success and raises ApiError otherwise, so reaching the next
+      // line means the account is confirmed — there is no partial-success state to check.
+      await confirmRegistration(id, code.trim());
+
+      // The PostConfirmation trigger has now assigned preferred_username, so the chosen
+      // name works as a sign-in alias from here and the id is no longer needed.
+      forgetAccountId(chosenName);
+      navigate('/login?confirmed=1');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -76,8 +72,12 @@ export default function ConfirmEmail() {
     }
 
     try {
-      await resendSignUpCode({ username: id });
-      setNotice('A new code is on its way.');
+      const { codeDestination } = await resendRegistrationCode(id);
+      setNotice(
+        codeDestination
+          ? `A new code is on its way to ${codeDestination}.`
+          : 'A new code is on its way.',
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }

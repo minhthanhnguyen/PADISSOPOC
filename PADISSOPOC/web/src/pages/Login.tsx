@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { signIn } from 'aws-amplify/auth';
+import { ApiError, login } from '../api-client';
+import { saveSession } from '../session';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -16,28 +17,23 @@ export default function Login() {
     setError(null);
     setBusy(true);
     try {
-      // USER_SRP_AUTH: the pool's app client has USER_PASSWORD_AUTH disabled,
-      // so the password is never sent to Cognito in plaintext.
-      const { isSignedIn, nextStep } = await signIn({
-        username,
-        password,
-        options: { authFlowType: 'USER_SRP_AUTH' },
-      });
+      // Sign-in goes through the management API, which runs ADMIN_USER_PASSWORD_AUTH under
+      // its own IAM role. The app client keeps USER_PASSWORD_AUTH disabled, so this flow
+      // cannot be reproduced against Cognito directly — it only works through the API.
+      const tokens = await login(username, password);
 
-      if (isSignedIn) {
-        navigate('/');
-        return;
-      }
-
-      if (nextStep.signInStep === 'CONFIRM_SIGN_UP') {
-        // Pass the typed name as `as`, not `username`: an unconfirmed account has no
-        // alias, so the confirm page has to resolve it to the opaque id itself.
+      // Bridged into Amplify by the token provider in auth-config.ts, so the rest of the
+      // app sees a normal session.
+      saveSession(tokens);
+      navigate('/');
+    } catch (err) {
+      // 403 means the password was right but the account was never confirmed. Send the
+      // user to finish that rather than showing a dead end.
+      if (err instanceof ApiError && err.status === 403) {
         navigate(`/confirm?as=${encodeURIComponent(username)}`);
         return;
       }
 
-      setError(`Additional step required: ${nextStep.signInStep}`);
-    } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);

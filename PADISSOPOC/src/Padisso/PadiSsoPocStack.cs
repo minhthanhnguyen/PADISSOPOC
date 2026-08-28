@@ -469,7 +469,13 @@ namespace Padi.Services.Authentication
                 AuthFlows = new AuthFlow
                 {
                     UserSrp = true,
+                    // UserPassword stays off deliberately. Enabling it would let anyone
+                    // holding the public client id authenticate with a plaintext password
+                    // straight against Cognito, bypassing the API and its throttling.
                     UserPassword = false,
+                    // AdminUserPassword backs the API's /public/login. It requires IAM
+                    // credentials, so only the API's execution role can use it.
+                    AdminUserPassword = true,
                     User = true,
                     Custom = true,
                 },

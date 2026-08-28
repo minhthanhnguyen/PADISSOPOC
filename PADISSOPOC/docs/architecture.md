@@ -39,7 +39,7 @@ flowchart LR
 
         subgraph apigw["PadiSsoApiStack — separate stack"]
             GW["API Gateway REST · regional<br/>/public/* → no authorizer<br/>everything else → Cognito authorizer<br/>api.global-np.padi.com/p/padi-auth-poc<br/>stage throttle"]
-            API["Api — ASP.NET Core MVC in Lambda<br/>Registration · Me · AdminUsers"]
+            API["Api — ASP.NET Core MVC in Lambda<br/>Registration · Session · Me · AdminUsers"]
         end
 
         DDB[("DynamoDB<br/>padi-sso-poc-magic-links<br/>single-use, TTL")]
@@ -70,7 +70,7 @@ flowchart LR
     UI -->|"GET /verify?token"| VER
 
     UI -->|"Bearer access token"| GW
-    UI -->|"/public/signup · confirm<br/>no token — none exists yet"| GW
+    UI -->|"/public/login · signup · confirm · resend<br/>no token — none exists yet"| GW
     GW -->|"authorizer validates,<br/>then proxy integration"| API
     GW -.->|"validates token against"| POOL
     API -->|"/me — caller's access token"| POOL
@@ -173,7 +173,7 @@ flowchart TD
         INot["Notifications<br/>SES / SNS delivery"]
     end
 
-    APP["src/Application<br/>use cases + ports<br/>CustomAuthChallenge · SendCognitoMessage<br/>RecordSignIn · AssignPreferredUsername<br/>RequestMagicLink · RedeemMagicLink<br/>ChangeUsername · SetUserUsername"]
+    APP["src/Application<br/>use cases + ports<br/>CustomAuthChallenge · SendCognitoMessage<br/>RecordSignIn · AssignPreferredUsername<br/>RequestMagicLink · RedeemMagicLink<br/>RegisterUser · ChangeUsername · SetUserUsername"]
     DOM["src/Domain<br/>MagicLinkToken · DeliveryChannel<br/>CognitoTriggerSource · SharedSecret"]
 
     CDK["src/Padisso<br/>CDK app — PadiSsoPocStack, PadiSsoApiStack"]

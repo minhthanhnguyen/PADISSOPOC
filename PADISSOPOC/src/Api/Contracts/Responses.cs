@@ -76,3 +76,17 @@ public sealed record RegistrationStartedResponse(
     string? CodeDestination);
 
 public sealed record CodeResentResponse(string? CodeDestination);
+
+/// <summary>
+/// Tokens from a successful sign-in.
+///
+/// The refresh token is returned to the browser, matching what Amplify already does with
+/// tokens it obtains itself. A hardened deployment would hold it in an HttpOnly cookie so
+/// script cannot read it — see the known gaps.
+/// </summary>
+public sealed record LoginResponse(
+    string? IdToken,
+    string? AccessToken,
+    string? RefreshToken,
+    int ExpiresIn,
+    string? TokenType);

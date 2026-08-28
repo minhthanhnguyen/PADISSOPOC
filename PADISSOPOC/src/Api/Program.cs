@@ -48,8 +48,28 @@ public sealed class Program
                 options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
             });
 
+        AddCors(builder, settings);
+
         builder.Services.AddProblemDetails();
         builder.Services.AddExceptionHandler<DirectoryExceptionHandler>();
+    }
+
+    public const string CorsPolicy = "browser-clients";
+
+    /// <summary>
+    /// API Gateway answers the OPTIONS preflight itself, but a Lambda proxy integration
+    /// returns this app's response verbatim — so the Access-Control-Allow-Origin header on
+    /// the actual call has to come from here. Without it a browser passes preflight and then
+    /// rejects every real response.
+    ///
+    /// With no origins configured the policy allows none, which fails closed.
+    /// </summary>
+    private static void AddCors(WebApplicationBuilder builder, ApiSettings settings)
+    {
+        builder.Services.AddCors(options => options.AddPolicy(CorsPolicy, policy => policy
+            .WithOrigins(settings.AllowedOrigins)
+            .WithHeaders("Authorization", "Content-Type")
+            .WithMethods("GET", "POST", "PUT", "PATCH", "DELETE")));
     }
 
     /// <summary>
@@ -101,6 +121,8 @@ public sealed class Program
         builder.Services.AddSingleton<IUserSelfService, CognitoUserSelfService>();
         builder.Services.AddSingleton<IUserRegistration, CognitoUserRegistration>();
         builder.Services.AddSingleton(new CognitoRegistrationOptions(settings.ClientId));
+        builder.Services.AddSingleton<IPasswordAuthenticator, CognitoPasswordAuthenticator>();
+        builder.Services.AddSingleton(new CognitoPasswordAuthOptions(settings.UserPoolId, settings.ClientId));
         builder.Services.AddSingleton<IIdentifierFactory, GuidIdentifierFactory>();
         builder.Services.AddSingleton<ChangeUsername>();
         builder.Services.AddSingleton<SetUserUsername>();
@@ -113,6 +135,9 @@ public sealed class Program
     {
         app.UseExceptionHandler();
         app.UseStatusCodePages();
+        // Before authentication, so a 401 still carries CORS headers and the browser can
+        // read the status instead of reporting an opaque network error.
+        app.UseCors(CorsPolicy);
         app.UseAuthentication();
         app.UseAuthorization();
 

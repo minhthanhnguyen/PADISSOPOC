@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { fetchAuthSession, getCurrentUser, signOut } from 'aws-amplify/auth';
+import { clearSession } from '../session';
 import Passkeys from '../components/Passkeys';
 
 type Tokens = {
@@ -64,6 +65,9 @@ export default function Dashboard() {
   }, [load]);
 
   async function onSignOut() {
+    // Both stores, and the API session first: the token provider prefers it, so leaving it
+    // behind would have Amplify keep reporting a signed-in user after signOut().
+    clearSession();
     await signOut();
     navigate('/login');
   }
