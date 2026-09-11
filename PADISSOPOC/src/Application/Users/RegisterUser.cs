@@ -9,7 +9,9 @@ public sealed record RegisterUserCommand(
     string Password,
     string Email,
     string? GivenName,
-    string? FamilyName);
+    string? MiddleInitial,
+    string? FamilyName,
+    string? Birthdate);
 
 /// <summary>
 /// Creates an unconfirmed account from a public, unauthenticated request.
@@ -30,10 +32,20 @@ public sealed class RegisterUser(
     {
         var username = (command.Username ?? "").Trim();
 
+        // All input is validated before any call to AWS. Ordering it the other way makes a
+        // bad birthdate cost a round trip, and hides the validation failure behind whatever
+        // the availability lookup happens to do.
         var problem = UsernameRules.Validate(username);
         if (problem is not null)
         {
             throw new DirectoryValidationException(problem);
+        }
+
+        // Optional attribute: an omitted birthdate is valid, a malformed one is not.
+        var birthdate = string.IsNullOrWhiteSpace(command.Birthdate) ? null : command.Birthdate.Trim();
+        if (birthdate is not null && BirthdateRules.Validate(birthdate) is { } dateProblem)
+        {
+            throw new DirectoryValidationException(dateProblem);
         }
 
         // Checked before the account exists. This is a deliberate disclosure — a sign-up
@@ -51,7 +63,9 @@ public sealed class RegisterUser(
             Password: command.Password,
             Email: (command.Email ?? "").Trim(),
             GivenName: command.GivenName?.Trim(),
-            FamilyName: command.FamilyName?.Trim());
+            MiddleInitial: command.MiddleInitial?.Trim(),
+            FamilyName: command.FamilyName?.Trim(),
+            Birthdate: birthdate);
 
         var result = await registration.SignUpAsync(account, ct);
 

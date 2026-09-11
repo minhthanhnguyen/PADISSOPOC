@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Padi.Services.Authentication.Api.Contracts;
 using Padi.Services.Authentication.Application.Abstractions;
 using Padi.Services.Authentication.Application.Users;
+using Padi.Services.Authentication.Domain.Identity;
 
 namespace Padi.Services.Authentication.Api.Controllers;
 
@@ -30,14 +31,33 @@ public sealed class MeController(IUserSelfService users, ChangeUsername changeUs
     public async Task<ActionResult<ProfileResponse>> UpdateProfile(
         [FromBody] UpdateProfileRequest request, CancellationToken ct)
     {
+        // Null means "leave alone"; empty string means "clear". All four attributes are
+        // optional on the pool, so clearing one is a legitimate update rather than an error.
         var attributes = new Dictionary<string, string>();
         if (request.GivenName is not null)
         {
             attributes["given_name"] = request.GivenName.Trim();
         }
+        if (request.MiddleInitial is not null)
+        {
+            attributes["middle_name"] = request.MiddleInitial.Trim();
+        }
         if (request.FamilyName is not null)
         {
             attributes["family_name"] = request.FamilyName.Trim();
+        }
+        if (request.Birthdate is not null)
+        {
+            var birthdate = request.Birthdate.Trim();
+
+            // Blank clears it; anything else must be a real date, not just ten digits in
+            // the right shape — the annotation only checks the shape.
+            if (birthdate.Length > 0 && BirthdateRules.Validate(birthdate) is { } problem)
+            {
+                return Problem(title: problem, statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            attributes["birthdate"] = birthdate;
         }
 
         // A body with every field omitted is structurally valid but means nothing.
@@ -45,7 +65,7 @@ public sealed class MeController(IUserSelfService users, ChangeUsername changeUs
         {
             return Problem(
                 title: "Nothing to update.",
-                detail: "Supply givenName, familyName, or both.",
+                detail: "Supply any of givenName, middleInitial, familyName or birthdate.",
                 statusCode: StatusCodes.Status400BadRequest);
         }
 

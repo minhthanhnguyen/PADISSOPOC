@@ -32,8 +32,12 @@ export type RegisterInput = {
   username: string;
   password: string;
   email: string;
+  /** All four are optional on the pool — omit or send empty and nothing is stored. */
   givenName?: string;
+  middleInitial?: string;
   familyName?: string;
+  /** YYYY-MM-DD, the only format Cognito's birthdate attribute accepts. */
+  birthdate?: string;
 };
 
 /** Raised for any non-2xx response, carrying the message the API supplied. */
@@ -50,6 +54,15 @@ export type IssuedTokens = {
   refreshToken: string | null;
   expiresIn: number;
   tokenType: string | null;
+};
+
+export type PasswordResetStarted = {
+  /**
+   * Masked destination the code went to. Returned whether or not the account exists —
+   * Cognito fabricates a plausible one for an unknown username, so this cannot be used to
+   * probe which accounts are real.
+   */
+  codeDestination: string | null;
 };
 
 export type CodeResent = {
@@ -80,6 +93,19 @@ export async function confirmRegistration(accountId: string, code: string): Prom
 
 export async function resendRegistrationCode(accountId: string): Promise<CodeResent> {
   return post<CodeResent>('/public/signup/resend', { accountId });
+}
+
+/** Always succeeds for a well-formed request, whether or not the account exists. */
+export async function requestPasswordReset(username: string): Promise<PasswordResetStarted> {
+  return post<PasswordResetStarted>('/public/password/forgot', { username });
+}
+
+export async function completePasswordReset(
+  username: string,
+  code: string,
+  newPassword: string,
+): Promise<void> {
+  await post<void>('/public/password/reset', { username, code, newPassword });
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {

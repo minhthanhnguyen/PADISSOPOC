@@ -42,7 +42,9 @@ public sealed class RegistrationController(
                 Password: request.Password,
                 Email: request.Email,
                 GivenName: request.GivenName,
-                FamilyName: request.FamilyName),
+                MiddleInitial: request.MiddleInitial,
+                FamilyName: request.FamilyName,
+                Birthdate: request.Birthdate),
             ct);
 
         // No Location header: the account is not addressable by an anonymous caller, and

@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { confirmResetPassword, resetPassword } from 'aws-amplify/auth';
+import { completePasswordReset, requestPasswordReset } from '../api-client';
 import { PASSWORD_RULES } from '../auth-config';
 
 type Stage = 'request' | 'confirm';
@@ -24,16 +24,12 @@ export default function ForgotPassword() {
     setNotice(null);
     setBusy(true);
     try {
-      const { nextStep } = await resetPassword({ username: username.trim() });
-
-      if (nextStep.resetPasswordStep === 'CONFIRM_RESET_PASSWORD_WITH_CODE') {
-        setDestination(nextStep.codeDeliveryDetails?.destination ?? null);
-        setStage('confirm');
-        return;
-      }
-
-      // 'DONE' means Cognito considers the reset already complete.
-      navigate('/login?reset=1');
+      // The API answers 202 for any well-formed request — Cognito returns a simulated
+      // destination for an unknown account rather than an error — so there is no
+      // "already done" branch and no case where this reveals whether the user exists.
+      const { codeDestination } = await requestPasswordReset(username.trim());
+      setDestination(codeDestination);
+      setStage('confirm');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -53,11 +49,7 @@ export default function ForgotPassword() {
 
     setBusy(true);
     try {
-      await confirmResetPassword({
-        username: username.trim(),
-        confirmationCode: code.trim(),
-        newPassword: password,
-      });
+      await completePasswordReset(username.trim(), code.trim(), password);
       navigate('/login?reset=1');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -70,8 +62,8 @@ export default function ForgotPassword() {
     setError(null);
     setNotice(null);
     try {
-      const { nextStep } = await resetPassword({ username: username.trim() });
-      setDestination(nextStep.codeDeliveryDetails?.destination ?? destination);
+      const { codeDestination } = await requestPasswordReset(username.trim());
+      setDestination(codeDestination ?? destination);
       setNotice('A new code is on its way.');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

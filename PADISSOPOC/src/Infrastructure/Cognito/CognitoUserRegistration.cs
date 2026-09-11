@@ -33,9 +33,20 @@ public sealed class CognitoUserRegistration(
         {
             attributes.Add(new AttributeType { Name = "given_name", Value = account.GivenName });
         }
+        if (!string.IsNullOrWhiteSpace(account.MiddleInitial))
+        {
+            // The initial lives in the standard middle_name attribute — there is no
+            // dedicated Cognito attribute for an initial, and a custom one would mean a
+            // schema change the live pool cannot take.
+            attributes.Add(new AttributeType { Name = "middle_name", Value = account.MiddleInitial });
+        }
         if (!string.IsNullOrWhiteSpace(account.FamilyName))
         {
             attributes.Add(new AttributeType { Name = "family_name", Value = account.FamilyName });
+        }
+        if (!string.IsNullOrWhiteSpace(account.Birthdate))
+        {
+            attributes.Add(new AttributeType { Name = "birthdate", Value = account.Birthdate });
         }
 
         try
@@ -98,15 +109,16 @@ public sealed class CognitoUserRegistration(
             // Cognito's response when the account is already confirmed.
             throw new DirectoryValidationException("This account is already confirmed.");
         }
-        catch (Exception ex) when (ex is UserNotFoundException or ResourceNotFoundException)
+        catch (UserNotFoundException)
         {
-            // ConfirmSignUp reports an unknown user as ResourceNotFoundException
-            // ("Username/client id combination not found"), not UserNotFoundException.
-            // The same exception would be raised by a misconfigured ClientId — which would
-            // turn every request into a 404 rather than surfacing the real fault, so the
-            // original message is kept in the log by the exception handler.
             throw new UserNotFoundInDirectoryException(accountId);
         }
+
+        // ResourceNotFoundException is deliberately NOT caught. With the pool reachable and
+        // PreventUserExistenceErrors on, an unknown user produces ExpiredCode or
+        // CodeMismatch above — so this exception means the *client id* could not be
+        // resolved, which is a deployment fault. Letting it surface as a 500 keeps that
+        // visible instead of reporting a misleading "no such user".
     }
 
     public async Task<string?> ResendCodeAsync(string accountId, CancellationToken ct = default)
@@ -121,9 +133,11 @@ public sealed class CognitoUserRegistration(
 
             return response.CodeDeliveryDetails?.Destination;
         }
-        catch (Exception ex) when (ex is UserNotFoundException or ResourceNotFoundException)
+        catch (UserNotFoundException)
         {
-            // As above: an unknown user surfaces as ResourceNotFoundException here.
+            // ResendConfirmationCode returns simulated CodeDeliveryDetails for an unknown
+            // user rather than throwing, so this is rare. ResourceNotFoundException is left
+            // uncaught for the same reason as in ConfirmAsync.
             throw new UserNotFoundInDirectoryException(accountId);
         }
         catch (InvalidParameterException ex)

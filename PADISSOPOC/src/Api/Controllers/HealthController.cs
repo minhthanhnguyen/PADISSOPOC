@@ -5,12 +5,17 @@ using Padi.Services.Authentication.Api.Contracts;
 namespace Padi.Services.Authentication.Api.Controllers;
 
 /// <summary>
-/// Liveness only. Mapped in API Gateway as its own resource with no authorizer, so it must
-/// stay anonymous — and must never report anything that would be useful to an unauthenticated
-/// caller, such as pool ids or dependency state.
+/// Liveness only. Must never report anything useful to an unauthenticated caller — no pool
+/// ids, no dependency state.
+///
+/// Lives under `/public` rather than at `/health` so it is matched by the same greedy
+/// `{proxy+}` gateway resource as every other public route. A dedicated non-greedy resource
+/// reached the Lambda with the custom domain's base path still on the front of the request
+/// path, and ASP.NET routing then found nothing — the endpoint 404'd in AWS while working
+/// locally.
 /// </summary>
 [ApiController]
-[Route("health")]
+[Route("public/health")]
 [AllowAnonymous]
 [Produces("application/json")]
 public sealed class HealthController : ControllerBase

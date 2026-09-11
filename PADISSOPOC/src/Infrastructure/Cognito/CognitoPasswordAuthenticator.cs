@@ -4,8 +4,8 @@ using Padi.Services.Authentication.Application.Abstractions;
 
 namespace Padi.Services.Authentication.Infrastructure.Cognito;
 
-/// <summary>The pool and app client that <see cref="CognitoPasswordAuthenticator"/> signs in against.</summary>
-public sealed record CognitoPasswordAuthOptions(string UserPoolId, string ClientId);
+/// <summary>The pool and app client the password flows — sign-in and reset — run against.</summary>
+public sealed record CognitoPasswordOptions(string UserPoolId, string ClientId);
 
 /// <summary>
 /// Password sign-in via ADMIN_USER_PASSWORD_AUTH.
@@ -17,7 +17,7 @@ public sealed record CognitoPasswordAuthOptions(string UserPoolId, string Client
 /// </summary>
 public sealed class CognitoPasswordAuthenticator(
     IAmazonCognitoIdentityProvider cognito,
-    CognitoPasswordAuthOptions options) : IPasswordAuthenticator
+    CognitoPasswordOptions options) : IPasswordAuthenticator
 {
     public async Task<SignInOutcome> SignInAsync(
         string username, string password, CancellationToken ct = default)

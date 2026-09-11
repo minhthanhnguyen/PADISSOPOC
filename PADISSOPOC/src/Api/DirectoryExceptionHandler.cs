@@ -26,6 +26,7 @@ public sealed class DirectoryExceptionHandler(IAuditLog audit) : IExceptionHandl
             // 403 rather than 401: the credentials were accepted, the account is not usable
             // yet. The client keys on this to send the user back to confirmation.
             AccountNotConfirmedException e => (StatusCodes.Status403Forbidden, e.Message),
+            TooManyAttemptsException e => (StatusCodes.Status429TooManyRequests, e.Message),
             _ => (0, ""),
         };
 

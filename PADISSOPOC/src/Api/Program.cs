@@ -114,15 +114,22 @@ public sealed class Program
 
     private static void AddApplicationServices(WebApplicationBuilder builder, ApiSettings settings)
     {
+        // Region comes from settings rather than the SDK's own discovery. In Lambda the two
+        // agree, because AWS_REGION is a real environment variable there. Locally it is
+        // passed as a command-line argument, which configuration reads but the SDK does
+        // not — leaving the SDK to pick a region from the profile and call a pool that does
+        // not exist there, which surfaces as "Username/client id combination not found".
         builder.Services.AddSingleton<IAmazonCognitoIdentityProvider>(
-            _ => new AmazonCognitoIdentityProviderClient());
+            _ => new AmazonCognitoIdentityProviderClient(
+                Amazon.RegionEndpoint.GetBySystemName(settings.Region)));
 
         builder.Services.AddSingleton<IUserAdministration, CognitoUserAdministration>();
         builder.Services.AddSingleton<IUserSelfService, CognitoUserSelfService>();
         builder.Services.AddSingleton<IUserRegistration, CognitoUserRegistration>();
         builder.Services.AddSingleton(new CognitoRegistrationOptions(settings.ClientId));
         builder.Services.AddSingleton<IPasswordAuthenticator, CognitoPasswordAuthenticator>();
-        builder.Services.AddSingleton(new CognitoPasswordAuthOptions(settings.UserPoolId, settings.ClientId));
+        builder.Services.AddSingleton<IPasswordReset, CognitoPasswordReset>();
+        builder.Services.AddSingleton(new CognitoPasswordOptions(settings.UserPoolId, settings.ClientId));
         builder.Services.AddSingleton<IIdentifierFactory, GuidIdentifierFactory>();
         builder.Services.AddSingleton<ChangeUsername>();
         builder.Services.AddSingleton<SetUserUsername>();

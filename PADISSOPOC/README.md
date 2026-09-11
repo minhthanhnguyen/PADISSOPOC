@@ -84,7 +84,7 @@ Use cases take their ports through the constructor, so they can be exercised wit
 | Name | `padi-sso-poc-user-pool` |
 | Feature plan | `essentials` |
 | Sign-in alias | Username + **`preferred_username`**, case-insensitive |
-| Optional attributes | email, phone_number, given_name, family_name, birthdate |
+| Optional attributes | email, phone_number, given_name, **middle_name**, family_name, birthdate |
 | Custom attributes | `custom:padi_id`, `custom:affiliate_id`, `custom:last_login`, `custom:signup_username` |
 | Password policy | 6+ chars, upper + lower required; digits and symbols not required |
 | Account recovery | Email and phone, no MFA |
@@ -107,6 +107,25 @@ updateUserAttributes({ preferred_username: "minh-new" })
 ```
 
 The staging attribute exists because **Cognito rejects `preferred_username` in a SignUp request while it is an alias** — the value can only be assigned after confirmation, which is what the `PostConfirmation` trigger is for.
+
+#### Name and date-of-birth attributes
+
+First name, middle initial, last name and date of birth are all **optional and mutable**, and none of them required a pool change:
+
+| Field | Attribute | |
+|---|---|---|
+| First name | `given_name` | Already configured optional + mutable |
+| Middle initial | `middle_name` | **Not in the CDK schema** — see below |
+| Last name | `family_name` | Already configured optional + mutable |
+| Date of birth | `birthdate` | Already configured optional + mutable |
+
+**`middle_name` is deliberately absent from `StandardAttributes`.** Every Cognito pool already carries the full OIDC standard attribute set, and *"except for `sub`, standard attributes are optional by default"* — so `middle_name` is already optional and mutable without being declared. Adding a redundant entry would change the pool's `Schema`, which `UpdateUserPool` cannot apply to a live pool, risking a failed deploy for no functional gain. The app client sets no `WriteAttributes` restriction, so it can already read and write it.
+
+There is no Cognito attribute for an *initial*, so the single character is stored in `middle_name` and constrained to length 1 by the API and the sign-up form. Relaxing that to a full middle name is a contract change only — no pool work.
+
+**Date of birth is validated twice, on purpose.** Cognito requires *"a valid 10 character date in the format YYYY-MM-DD"*. The `[RegularExpression]` annotation checks the shape; [`BirthdateRules`](src/Domain/Identity/BirthdateRules.cs) then parses it exactly, because `2026-02-31` and `2026-13-01` both pass the regex and are not dates. Both are rejected with `400` before any AWS call — input validation runs ahead of the username availability lookup so a bad field never costs a round trip.
+
+The browser uses `<input type="date">`, which emits `YYYY-MM-DD` natively, so the client needs no date parsing of its own.
 
 #### Username characters
 
@@ -235,13 +254,15 @@ Two route groups, separated by **authority rather than by feature**:
 
 | Route | Policy | |
 |---|---|---|
-| `GET /health` | anonymous | Liveness. Reveals nothing |
+| `GET /public/health` | anonymous | Liveness. Reveals nothing |
 | `POST /public/login` | anonymous | Password sign-in; returns id, access and refresh tokens |
+| `POST /public/password/forgot` | anonymous | Starts a reset; always 202 with a masked destination |
+| `POST /public/password/reset` | anonymous | Completes it with the code and a new password |
 | `POST /public/signup` | anonymous | Creates an unconfirmed account; returns `accountId` |
 | `POST /public/signup/confirm` | anonymous | Confirms with the emailed code |
 | `POST /public/signup/resend` | anonymous | Sends a replacement code |
 | `GET /me` | `caller` | Profile from the caller's own token |
-| `PATCH /me` | `caller` | `given_name`, `family_name` |
+| `PATCH /me` | `caller` | `given_name`, `middle_name`, `family_name`, `birthdate` — all optional; omit to leave, send `""` to clear |
 | `PUT /me/username` | `caller` | `preferred_username`, validated |
 | `PUT /me/email` | `caller` | Starts verification; 202 with masked destination |
 | `POST /me/email/confirm` | `caller` | Completes it |
@@ -258,6 +279,23 @@ Two route groups, separated by **authority rather than by feature**:
 Registration and sign-in cannot sit behind the authorizer — a token is what they produce. Those routes live under a single `/public` prefix, mapped in API Gateway as **its own resource with `AuthorizationType.NONE`** while everything else stays behind the Cognito authorizer. The unauthenticated surface is therefore exactly the routes under that prefix, reviewable by looking at `RegistrationController`, `SessionController` and one block in the stack. *Nothing under `/public` may act on an existing account without the caller proving control of it* — sign-in qualifies because it requires the password.
 
 The registration routes call Cognito's own unauthenticated operations (`SignUp`, `ConfirmSignUp`, `ResendConfirmationCode`) with the app client id and no IAM credentials, so an anonymous caller can do nothing there they could not already do against Cognito directly. Two things need the service role: the username availability check inside sign-up, and sign-in.
+
+### Password reset
+
+`/public/password/forgot` and `/public/password/reset` wrap Cognito's `ForgotPassword` and `ConfirmForgotPassword`. Both are client-id-only, so unlike sign-in they need no IAM — routing them through the API buys throttling and one audited entry point, not extra privilege.
+
+Enumeration protection depends on the pool's `PreventUserExistenceErrors`, and the documented behaviour is specific enough to be worth recording:
+
+- **`ForgotPassword`** — *"When a user isn't found, is deactivated, or doesn't have a verified delivery mechanism to recover their password, Amazon Cognito returns `CodeDeliveryDetails` with a simulated delivery medium."* The API passes that straight through and always answers `202`, so the response is identical for real and imaginary accounts.
+- **`ConfirmForgotPassword`** — *"Amazon Cognito returns the `CodeMismatchException` error for users that don't exist or are disabled."* The adapter maps `CodeMismatch`, `ExpiredCode`, `UserNotFound` and `ResourceNotFound` to one message, *"That code is not correct or has expired"*, so the reset step cannot distinguish them either.
+
+`InvalidPasswordException` is surfaced verbatim — it describes the pool's password policy, not the account. Cognito's own `LimitExceededException` becomes `429` rather than a generic failure.
+
+Verified against the live pool: two different unknown usernames returned `202` with `n***@h***` and `+*******5693` — Cognito picks the simulated medium from the username's format, so the response shape gives nothing away either.
+
+**`ResourceNotFoundException` is deliberately left unmapped** on all of these. With the pool reachable and `PreventUserExistenceErrors` on, an unknown user produces `ExpiredCode`, `CodeMismatch` or a simulated delivery — never this. So it means the *client id* could not be resolved, which is a deployment fault, and a 500 keeps that visible rather than reporting a misleading "no such user".
+
+A password *change* by a signed-in user who knows their current password is a different operation and is **not** here; it belongs under `/me` and has not been added.
 
 ### Sign-in runs as an admin flow
 
@@ -483,6 +521,8 @@ API Gateway strips the mapped path before matching resources, so routes are writ
 
 Only an `AWS::ApiGatewayV2::ApiMapping` is created — no domain, no certificate. Those belong to whoever owns the domain, and `cdk destroy` removes the mapping without touching it. That is why `apiDomainCertArn` no longer exists.
 
+**Only greedy resources survive the base path.** Every gateway route is a `{proxy+}` resource. A dedicated non-greedy resource — `/health` originally was one — reaches the Lambda with the base path still on the request path, and ASP.NET routing finds nothing: the endpoint 404s in AWS while working perfectly under Kestrel. The hosting layer reconstructs the path correctly from the resource template and proxy parameter, which only exist for greedy resources. Health therefore lives at `/public/health`. Adding a route directly under the API root will hit the same wall.
+
 **The V2 resource is required, not a preference.** `apiBasePath` has two segments, and `AWS::ApiGateway::BasePathMapping` only supports one. AWS is explicit: *"To create API mappings with multiple levels, you must use `AWS::ApiGatewayV2`."* The V1 resource synthesizes a multi-level path without complaint and fails at deploy, so this is not something CDK will catch for you. Multi-level mappings also require the domain to be **Regional with the TLS 1.2 security policy** — `api.global-np.padi.com` is both.
 
 Consequences of a multi-level mapping worth knowing:
@@ -648,10 +688,10 @@ A minimal React reference client lives in `web/` — Vite, TypeScript, and AWS A
 
 | Route | Purpose |
 |---|---|
-| `/signup` | Username, password, email, first name, last name. Posts to the management API's `/public/signup`, not to Cognito |
+| `/signup` | Username, password and email required; first name, middle initial, last name and date of birth optional. Posts to the management API's `/public/signup`, not to Cognito |
 | `/confirm` | 6-digit code, via the API's `/public/signup/confirm` and `/public/signup/resend`. Resolves the chosen name to the opaque account id via `localStorage` |
 | `/login` | Username + password, via the API's `/public/login`. Tokens are bridged into Amplify |
-| `/forgot-password` | Two-step reset: username, then code + new password |
+| `/forgot-password` | Two-step reset via the API's `/public/password/forgot` and `/public/password/reset` |
 | `/passwordless` | Choice-based `USER_AUTH` — email OTP, SMS OTP, or passkey |
 | `/magic-link` | Requests a link; manual token redemption as a fallback |
 | `/verify` | Where the emailed link lands — redeems the token automatically and shows a placeholder signed-in page |
@@ -694,11 +734,12 @@ npm run dev --prefix web
 - **Email verification is enforced by the pool.** `AutoVerify` is on for email, so `signUp` returns a `CONFIRM_SIGN_UP` next step and Cognito emails a code. Sign-in fails until `confirmSignUp` succeeds. The login page detects an unconfirmed account and routes back to `/confirm`.
 - **Cognito's default email sender caps at 50 messages/day**, which covers these verification codes — the first thing to hit if you test signup repeatedly.
 - **No hosted UI involvement.** The client calls the Cognito API directly, so `callbackUrls` is not used. Add `http://localhost:5173` to `callbackUrls` in `cdk.json` before wiring up social sign-in through the hosted UI.
+- **Registration, sign-in and password reset go through the API; the rest still goes to Cognito.** `/signup`, `/confirm`, `/login` and `/forgot-password` no longer import Amplify at all. Passwordless, magic link, passkeys and the signed-in profile pages still call Cognito directly.
 - **The whole registration flow goes through the API; everything else still goes to Cognito.** `/signup` and `/confirm` call `VITE_API_BASE_URL` + `/public/signup`, `/public/signup/confirm` and `/public/signup/resend` through `web/src/api-client.ts`. The opaque account id is minted server-side rather than by `crypto.randomUUID()` in the browser, and neither page imports Amplify any more. Sign-in, password reset, passwordless and the signed-in pages still use Amplify directly.
 - **`VITE_API_BASE_URL` is the API root, not the public prefix.** Route paths add their own `/public`, `/me` or `/admin`, so the base is `https://api.global-np.padi.com/p/padi-auth-poc` and sign-up lands on `https://api.global-np.padi.com/p/padi-auth-poc/public/signup`. Pasting the quoted public URL — which ends in `/public` — produces `/public/public/signup` and a bare 404, so `api-client.ts` throws at load with an explanatory message instead. Point it at `http://localhost:5080` to run the UI against a locally hosted API.
 - **Resend now names the destination.** The API returns the masked address Cognito reported, so the page says "A new code is on its way to `m***@g***.com`" instead of a bare acknowledgement — useful when the user is unsure which address they signed up with.
 - **CORS needs both halves.** API Gateway's `DefaultCorsPreflightOptions` answers only the OPTIONS preflight; with a Lambda proxy integration the actual response is whatever the app returns, so the API sets `Access-Control-Allow-Origin` itself from `ALLOWED_ORIGINS`. Preflight passing while every real call fails is the symptom of having only one half.
-- **Password reset does not reveal whether an account exists.** The app client sets `PreventUserExistenceErrors`, so `resetPassword` for an unknown username returns a normal `CONFIRM_RESET_PASSWORD_WITH_CODE` step with a **fabricated** masked destination rather than throwing. Verified: `not-a-real-user-9df3` returns `n***@h***`. Don't "improve" `/forgot-password` by surfacing a not-found error — that would reintroduce enumeration.
+- **Password reset does not reveal whether an account exists.** `/public/password/forgot` always answers `202` with a masked destination, because Cognito fabricates one for an unknown username rather than failing. Verified through the UI: `not-a-real-user-8kq` produced *"A reset code is on its way to `+*******6812`"*. The reset step reports a wrong code and an unknown user identically. Don't "improve" either by surfacing a not-found error — that reintroduces enumeration.
 - **Changing email needs a session refresh.** The ID token caches the `email` claim, so `/change-email` calls `fetchAuthSession({ forceRefresh: true })` after confirming. Without it the dashboard keeps showing the old address even though the pool has the new one.
 - **Email is not unique.** It is an attribute, not a sign-in alias, so Cognito will not stop two accounts holding the same address. `/change-email` only rejects re-entering the account's *current* address. Enforce uniqueness in the app if it matters.
 
@@ -762,13 +803,14 @@ This is a proof of concept. Before production:
 - **The V2 pool is deployed but the mutable-username flows are untested.** Sign-up, password reset and change email were proven against the *previous* pool, before `preferred_username` existed. The triggers and messaging path are unchanged so they should carry over, but nothing in the new design has been exercised. Test sign-up first: it now spans `signUp` → `PostConfirmation` → alias assignment, the longest untried path in the system, and the only one that can leave an account unreachable if it fails.
 - **The previous pool is orphaned, not deleted.** `RemovalPolicy.RETAIN` means CloudFormation left it behind when the logical ID changed. It still holds the old test accounts and the `auth-stage-v2.padi.com` custom domain, and it still bills for anything the feature plan charges. Delete it once nothing depends on it.
 - **Confirmation is browser-bound.** Between sign-up and confirmation an account has no `preferred_username`, so the opaque UUID is the only identifier Cognito accepts, and it lives in `localStorage`. A user who abandons confirmation and returns on another device cannot finish; they sign up again, and the chosen name is still free. Acceptable for a POC — a production flow should confirm by emailed link carrying the id, or auto-confirm via `PreSignUp` and verify email separately.
-- **The management API has never served an authenticated request.** Startup, routing, and rejection of missing and malformed tokens are verified locally; nothing has been exercised with a real Cognito token, because the new pool has no users yet and no one is in `padi-sso-admins`. Both authorization policies and every Cognito call are unproven.
+- **No route has been exercised by a signed-in user.** The whole public surface is verified against the deployed API — `/public/health`, sign-up validation, confirm, resend, login, and both password routes all return the expected statuses, with CORS headers on real responses. `/me` and `/admin/users` correctly return `401` without a token, but nothing has been called *with* one: the pool has no users and nobody is in `padi-sso-admins`. Both authorization policies, the `IssuedForClient` requirement, and every `/me` and `/admin` Cognito call remain unproven.
 - **The API session never refreshes.** `session.ts` stores the refresh token but never exchanges it, so the session simply expires after `expiresIn` (one hour) and the user signs in again. Amplify's own refresh machinery is bypassed because the custom token provider returns stored tokens rather than a refreshable session. Implementing this means calling Cognito's `REFRESH_TOKEN_AUTH`, most cleanly as another API route.
 - **`/public/login` is unthrottled per caller and returns a refresh token to the browser.** Two things follow. Sign-in is the classic brute-force target and the only limit in front of it is the per-stage throttle, which one client can consume alone — it needs a WAF rate-based rule keyed on source IP, and a per-method throttle at minimum. And the refresh token is returned in the response body, matching what Amplify already does with tokens it obtains itself; a hardened deployment would put it in an `HttpOnly` cookie so script cannot read it, which also means the endpoint would need to move off a cross-origin call or gain credentialed CORS.
 - **No AWS WAF is attached yet, and `/public/signup` is now an unauthenticated write.** REST API was chosen specifically because it *can* carry WAF, but no web ACL is associated. Stage throttling (50 rps / 100 burst) is the only limit and it is per-stage, not per-caller — so one client can consume the whole budget. Sign-up is the endpoint that makes this urgent: each call creates a Cognito user *and* sends an email through the messaging service, so abuse costs money and sender reputation, not just capacity. Attach a web ACL with a rate-based rule, and consider a CAPTCHA before opening it to the internet.
+- **The Cognito SDK client is constructed with an explicit region.** In Lambda `AWS_REGION` is a real environment variable, but the local launch config passes `--AWS_REGION=us-west-2` as a *command-line argument* — which `IConfiguration` reads and the AWS SDK does not. Left to its own discovery the SDK picked a region from the profile and called a pool that doesn't exist there, surfacing as `ResourceNotFoundException: Username/client id combination not found` on every client-id-only call. `Program.cs` now passes `RegionEndpoint.GetBySystemName(settings.Region)` so both environments agree.
 - **Sign-up and sign-in need AWS credentials even locally.** `/public/signup` checks username availability with `ListUsers` before calling Cognito's unauthenticated `SignUp`, and `/public/login` uses `AdminInitiateAuth` throughout — so running the API locally without valid credentials fails both with a 500, `The security token included in the request is invalid`. In Lambda the execution role covers it. It also means an IAM problem blocks registration that would otherwise succeed, since `SignUp` itself needs no credentials; consider degrading to "skip the check" rather than failing closed.
 - **A username can still be lost between sign-up and confirmation.** The availability check narrows the window but does not close it; two simultaneous sign-ups for the same name both succeed, and the second fails at confirmation with the account already created. Recovery today is to register again.
-- **The base path `auth` is unverified.** `api.global-np.padi.com` is shared with other services, and a mapping that collides with an existing one fails the deploy. Run `get-base-path-mappings` against the domain before deploying, and change `apiBasePath` if `auth` is taken.
+- **The API shares a domain owned by another team.** `api.global-np.padi.com` is tagged `padi-api` / team `learning`, and `p/padi-auth-poc` is now mapped on it. A future base-path change must not collide with theirs — check with `aws apigatewayv2 get-api-mappings` first.
 - **Magic-link Function URLs are still `AuthType.NONE` and outside the gateway.** The API now provides the WAF-capable front door the README has wanted for them, but `/request-link` and `/verify` have not been moved behind it.
 - **Password policy is below current guidance** — 6 characters is Cognito's floor and short of the 8-character minimum in NIST SP 800-63B. The composition rules are also an unusual pairing: uppercase and lowercase are mandatory while digits are not, which pushes users toward predictable shapes like `Passwd` without adding real entropy. Prefer a longer minimum over composition requirements, and enable threat protection (requires the `plus` feature plan) so credentials are checked against known-breached passwords.
 - **The messaging integration is proven for the account lifecycle, not for every trigger source.** Live `SignUp`, `ForgotPassword` and `UpdateUserAttribute` deliveries have each exercised the whole chain — Parameter Store credentials, the `client_credentials` token request with HTTP Basic client authentication, `EmailProxyRequest` attribute names and PascalCase serialisation, and Encryption SDK code decryption. Register, recover and change-email all worked end to end — though against the pool that `PadissoUserPoolV2` replaces, so they need one confirmation run after the new pool is deployed. Still unexercised: `Authentication`, `ResendCode`, `VerifyUserAttribute`, `AdminCreateUser`, `AccountTakeOverNotification`. These differ only in template key, so the remaining risk is a missing or wrong `Messaging:Definitions:*` entry, not a broken integration — and the `Default` fallback covers any of them that lack a specific key. `Authentication` is the next one worth a live test: the passwordless email-OTP flow depends on it. Because `CustomEmailSender` has no fallback, roll back by removing it from `LambdaTriggers`.

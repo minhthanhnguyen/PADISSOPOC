@@ -12,7 +12,9 @@ public sealed record ProfileResponse(
     string? Email,
     bool EmailVerified,
     string? GivenName,
+    string? MiddleInitial,
     string? FamilyName,
+    string? Birthdate,
     string? LastLogin,
     string? PadiId)
 {
@@ -26,7 +28,9 @@ public sealed record ProfileResponse(
             Email: Attr("email"),
             EmailVerified: Attr("email_verified") == "true",
             GivenName: Attr("given_name"),
+            MiddleInitial: Attr("middle_name"),
             FamilyName: Attr("family_name"),
+            Birthdate: Attr("birthdate"),
             LastLogin: Attr("custom:last_login"),
             PadiId: Attr("custom:padi_id"));
     }
@@ -76,6 +80,15 @@ public sealed record RegistrationStartedResponse(
     string? CodeDestination);
 
 public sealed record CodeResentResponse(string? CodeDestination);
+
+/// <summary>
+/// Masked destination a reset code was sent to.
+///
+/// Returned whether or not the account exists — for an unknown username Cognito fabricates
+/// a plausible destination, and that is passed through so the response cannot be used to
+/// probe which accounts are real.
+/// </summary>
+public sealed record PasswordResetStartedResponse(string? CodeDestination);
 
 /// <summary>
 /// Tokens from a successful sign-in.

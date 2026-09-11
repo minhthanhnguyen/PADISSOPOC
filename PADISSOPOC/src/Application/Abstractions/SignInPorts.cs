@@ -27,6 +27,26 @@ public interface IPasswordAuthenticator
 }
 
 /// <summary>
+/// Self-service password reset for a user who cannot sign in.
+///
+/// Both operations are Cognito's client-id-only flows, so they need no IAM and an
+/// anonymous caller can do nothing here they could not do against Cognito directly.
+/// </summary>
+public interface IPasswordReset
+{
+    /// <summary>
+    /// Starts a reset and returns the masked destination the code went to.
+    ///
+    /// Must not distinguish a known user from an unknown one. The pool's
+    /// PreventUserExistenceErrors setting makes Cognito return a fabricated destination
+    /// rather than an error, and that response is passed through unchanged.
+    /// </summary>
+    Task<string?> StartAsync(string username, CancellationToken ct = default);
+
+    Task CompleteAsync(string username, string code, string newPassword, CancellationToken ct = default);
+}
+
+/// <summary>
 /// Raised when credentials are rejected, or when the user does not exist.
 ///
 /// Deliberately one exception for both: distinguishing them would turn sign-in into a
@@ -45,3 +65,7 @@ public sealed class AuthenticationFailedException()
 /// </summary>
 public sealed class AccountNotConfirmedException()
     : Exception("This account has not been confirmed yet.");
+
+/// <summary>Raised when Cognito's own attempt limit is hit — surfaced as 429, not 400.</summary>
+public sealed class TooManyAttemptsException()
+    : Exception("Too many attempts. Wait a few minutes and try again.");

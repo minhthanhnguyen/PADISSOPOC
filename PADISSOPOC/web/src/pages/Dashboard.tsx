@@ -123,7 +123,9 @@ export default function Dashboard() {
           </tr>
           <tr><th>email_verified</th><td>{String(tokens.claims.email_verified ?? '—')}</td></tr>
           <tr><th>given_name</th><td>{claim('given_name')}</td></tr>
+          <tr><th>middle_name</th><td>{claim('middle_name')}</td></tr>
           <tr><th>family_name</th><td>{claim('family_name')}</td></tr>
+          <tr><th>birthdate</th><td>{claim('birthdate')}</td></tr>
           <tr><th>custom:last_login</th><td>{claim('custom:last_login')}</td></tr>
           <tr>
             <th>expires</th>

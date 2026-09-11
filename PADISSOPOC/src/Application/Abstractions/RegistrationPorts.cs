@@ -7,7 +7,9 @@ public sealed record NewAccount(
     string Password,
     string Email,
     string? GivenName,
-    string? FamilyName);
+    string? MiddleInitial,
+    string? FamilyName,
+    string? Birthdate);
 
 /// <summary>
 /// The result of starting a registration.

@@ -265,7 +265,7 @@ namespace Padi.Services.Authentication
                     Email = new StandardAttribute { Required = false, Mutable = true },
                     PhoneNumber = new StandardAttribute { Required = false, Mutable = true },
                     GivenName = new StandardAttribute { Required = false, Mutable = true },
-                    FamilyName = new StandardAttribute { Required = false, Mutable = true },
+                    FamilyName = new StandardAttribute { Required = false, Mutable = true },                    
                     Birthdate = new StandardAttribute { Required = false, Mutable = true },
                 },
                 CustomAttributes = new System.Collections.Generic.Dictionary<string, ICustomAttribute>

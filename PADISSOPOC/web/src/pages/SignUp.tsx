@@ -12,7 +12,9 @@ export default function SignUp() {
     password: '',
     email: '',
     givenName: '',
+    middleInitial: '',
     familyName: '',
+    birthdate: '',
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -45,7 +47,9 @@ export default function SignUp() {
         password: form.password,
         email: form.email,
         givenName: form.givenName,
+        middleInitial: form.middleInitial,
         familyName: form.familyName,
+        birthdate: form.birthdate,
       });
 
       // Until the account is confirmed the alias does not exist, so this id is the only
@@ -76,14 +80,35 @@ export default function SignUp() {
           <small className="muted">You can change this later. {USERNAME_RULES}</small>
         </label>
 
+        {/* None of these is required — they are optional attributes on the pool, so the
+            form must not insist on them. Leaving one blank stores nothing. */}
+        {/* Two per row: .row gives each label flex: 1 with no min-width override, so a
+            third field overflows the card rather than shrinking. */}
         <div className="row">
           <label>
             First name
-            <input value={form.givenName} onChange={set('givenName')} autoComplete="given-name" required />
+            <input value={form.givenName} onChange={set('givenName')} autoComplete="given-name" />
           </label>
           <label>
             Last name
-            <input value={form.familyName} onChange={set('familyName')} autoComplete="family-name" required />
+            <input value={form.familyName} onChange={set('familyName')} autoComplete="family-name" />
+          </label>
+        </div>
+
+        <div className="row">
+          <label>
+            Middle initial
+            <input
+              value={form.middleInitial}
+              onChange={set('middleInitial')}
+              maxLength={1}
+              autoComplete="additional-name"
+            />
+          </label>
+          <label>
+            Date of birth
+            {/* type=date yields YYYY-MM-DD, the only format Cognito's birthdate accepts. */}
+            <input type="date" value={form.birthdate} onChange={set('birthdate')} autoComplete="bday" />
           </label>
         </div>
 

@@ -155,11 +155,10 @@ namespace Padi.Services.Authentication
                 Proxy = true,
             });
 
-            // /health stays open so the gateway and deploy checks can reach it without a token.
-            RestApi.Root.AddResource("health").AddMethod("GET", integration, new MethodOptions
-            {
-                AuthorizationType = AuthorizationType.NONE,
-            });
+            // Health check lives at /public/health, under the proxy resource below, rather
+            // than as its own /health resource. A non-greedy resource forwards the request
+            // with the custom domain's base path still attached, which ASP.NET routing does
+            // not match — it 404s in AWS while working locally.
 
             // Registration: a user cannot hold a token before their account exists, so these
             // routes cannot sit behind the authorizer. Declared as its own resource rather
