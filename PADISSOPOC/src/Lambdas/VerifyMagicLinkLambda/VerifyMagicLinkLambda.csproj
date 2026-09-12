@@ -4,8 +4,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AWSProjectType>Lambda</AWSProjectType>
-    <AssemblyName>RequestMagicLink</AssemblyName>
-    <RootNamespace>Padi.Services.Authentication.MagicLink.RequestMagicLink</RootNamespace>
+    <AssemblyName>VerifyMagicLinkLambda</AssemblyName>
+    <RootNamespace>Padi.Services.Authentication.MagicLink.VerifyMagicLink</RootNamespace>
     <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
     <PublishReadyToRun>true</PublishReadyToRun>
   </PropertyGroup>
@@ -18,6 +18,5 @@
     <ProjectReference Include="..\..\Infrastructure\Core\Core.csproj" />
     <ProjectReference Include="..\..\Infrastructure\Cognito\Cognito.csproj" />
     <ProjectReference Include="..\..\Infrastructure\DynamoDb\DynamoDb.csproj" />
-    <ProjectReference Include="..\..\Infrastructure\Notifications\Notifications.csproj" />
   </ItemGroup>
 </Project>

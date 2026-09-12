@@ -4,7 +4,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AWSProjectType>Lambda</AWSProjectType>
-    <AssemblyName>CustomEmailSender</AssemblyName>
+    <AssemblyName>CustomEmailSenderLambda</AssemblyName>
     <RootNamespace>Padi.Services.Authentication.Cognito.CustomEmailSender</RootNamespace>
     <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
     <PublishReadyToRun>true</PublishReadyToRun>

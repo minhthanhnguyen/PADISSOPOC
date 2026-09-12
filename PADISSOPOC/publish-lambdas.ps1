@@ -5,14 +5,14 @@
 $ErrorActionPreference = 'Stop'
 
 $projects = @(
-    'DefineAuthChallenge',
-    'CreateAuthChallenge',
-    'VerifyAuthChallenge',
-    'PostAuthentication',
-    'PostConfirmation',
-    'CustomEmailSender',
-    'RequestMagicLink',
-    'VerifyMagicLink'
+    'DefineAuthChallengeLambda',
+    'CreateAuthChallengeLambda',
+    'VerifyAuthChallengeLambda',
+    'PostAuthenticationLambda',
+    'PostConfirmationLambda',
+    'CustomEmailSenderLambda',
+    'RequestMagicLinkLambda',
+    'VerifyMagicLinkLambda'
 )
 
 foreach ($p in $projects) {

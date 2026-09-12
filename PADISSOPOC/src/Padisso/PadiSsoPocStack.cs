@@ -88,8 +88,8 @@ namespace Padi.Services.Authentication
             {
                 FunctionName = "padi-sso-poc-define-auth",
                 Runtime = Runtime.DOTNET_10,
-                Handler = "DefineAuthChallenge::Padi.Services.Authentication.Cognito.DefineAuthChallenge.Function::Handler",
-                Code = LambdaCode("DefineAuthChallenge"),
+                Handler = "DefineAuthChallengeLambda::Padi.Services.Authentication.Cognito.DefineAuthChallenge.Function::Handler",
+                Code = LambdaCode("DefineAuthChallengeLambda"),
                 Timeout = Duration.Seconds(30),
                 MemorySize = 256,
             });
@@ -98,8 +98,8 @@ namespace Padi.Services.Authentication
             {
                 FunctionName = "padi-sso-poc-create-auth",
                 Runtime = Runtime.DOTNET_10,
-                Handler = "CreateAuthChallenge::Padi.Services.Authentication.Cognito.CreateAuthChallenge.Function::Handler",
-                Code = LambdaCode("CreateAuthChallenge"),
+                Handler = "CreateAuthChallengeLambda::Padi.Services.Authentication.Cognito.CreateAuthChallenge.Function::Handler",
+                Code = LambdaCode("CreateAuthChallengeLambda"),
                 Timeout = Duration.Seconds(30),
                 MemorySize = 256,
             });
@@ -140,8 +140,8 @@ namespace Padi.Services.Authentication
             {
                 FunctionName = "padi-sso-poc-custom-email-sender",
                 Runtime = Runtime.DOTNET_10,
-                Handler = "CustomEmailSender::Padi.Services.Authentication.Cognito.CustomEmailSender.Function::Handler",
-                Code = LambdaCode("CustomEmailSender"),
+                Handler = "CustomEmailSenderLambda::Padi.Services.Authentication.Cognito.CustomEmailSender.Function::Handler",
+                Code = LambdaCode("CustomEmailSenderLambda"),
                 Timeout = Duration.Seconds(30),
                 MemorySize = 512,
                 Environment = messagingEnv,
@@ -194,8 +194,8 @@ namespace Padi.Services.Authentication
             {
                 FunctionName = "padi-sso-poc-post-auth",
                 Runtime = Runtime.DOTNET_10,
-                Handler = "PostAuthentication::Padi.Services.Authentication.Cognito.PostAuthentication.Function::Handler",
-                Code = LambdaCode("PostAuthentication"),
+                Handler = "PostAuthenticationLambda::Padi.Services.Authentication.Cognito.PostAuthentication.Function::Handler",
+                Code = LambdaCode("PostAuthenticationLambda"),
                 Timeout = Duration.Seconds(30),
                 MemorySize = 256,
             });
@@ -204,8 +204,8 @@ namespace Padi.Services.Authentication
             {
                 FunctionName = "padi-sso-poc-post-confirm",
                 Runtime = Runtime.DOTNET_10,
-                Handler = "PostConfirmation::Padi.Services.Authentication.Cognito.PostConfirmation.Function::Handler",
-                Code = LambdaCode("PostConfirmation"),
+                Handler = "PostConfirmationLambda::Padi.Services.Authentication.Cognito.PostConfirmation.Function::Handler",
+                Code = LambdaCode("PostConfirmationLambda"),
                 Timeout = Duration.Seconds(30),
                 MemorySize = 256,
             });
@@ -214,8 +214,8 @@ namespace Padi.Services.Authentication
             {
                 FunctionName = "padi-sso-poc-verify-auth",
                 Runtime = Runtime.DOTNET_10,
-                Handler = "VerifyAuthChallenge::Padi.Services.Authentication.Cognito.VerifyAuthChallenge.Function::Handler",
-                Code = LambdaCode("VerifyAuthChallenge"),
+                Handler = "VerifyAuthChallengeLambda::Padi.Services.Authentication.Cognito.VerifyAuthChallenge.Function::Handler",
+                Code = LambdaCode("VerifyAuthChallengeLambda"),
                 Timeout = Duration.Seconds(30),
                 MemorySize = 256,
                 Environment = new Dictionary<string, string>
@@ -278,6 +278,11 @@ namespace Padi.Services.Authentication
                     ["signup_username"] = new StringAttribute(new StringAttributeProps { Mutable = true }),
                     // Written by the PostAuthentication trigger on every sign-in.
                     ["last_login"]   = new StringAttribute(new StringAttributeProps { Mutable = true }),
+                    // Appended, never inserted. CDK renders this dictionary into an ordered
+                    // Schema array, and Cognito accepts additions to an existing pool but
+                    // rejects changes to entries already in it — so reordering would look
+                    // like a modification and fail the deploy. New attributes go last.
+                    ["affiliate_type_id"] = new StringAttribute(new StringAttributeProps { Mutable = true }),
                 },
                 PasswordPolicy = new PasswordPolicy
                 {
@@ -517,8 +522,8 @@ namespace Padi.Services.Authentication
             {
                 FunctionName = "padi-sso-poc-request-magic-link",
                 Runtime = Runtime.DOTNET_10,
-                Handler = "RequestMagicLink::Padi.Services.Authentication.MagicLink.RequestMagicLink.Function::Handler",
-                Code = LambdaCode("RequestMagicLink"),
+                Handler = "RequestMagicLinkLambda::Padi.Services.Authentication.MagicLink.RequestMagicLink.Function::Handler",
+                Code = LambdaCode("RequestMagicLinkLambda"),
                 Timeout = Duration.Seconds(30),
                 MemorySize = 512,
                 Environment = magicLinkEnv,
@@ -528,8 +533,8 @@ namespace Padi.Services.Authentication
             {
                 FunctionName = "padi-sso-poc-verify-magic-link",
                 Runtime = Runtime.DOTNET_10,
-                Handler = "VerifyMagicLink::Padi.Services.Authentication.MagicLink.VerifyMagicLink.Function::Handler",
-                Code = LambdaCode("VerifyMagicLink"),
+                Handler = "VerifyMagicLinkLambda::Padi.Services.Authentication.MagicLink.VerifyMagicLink.Function::Handler",
+                Code = LambdaCode("VerifyMagicLinkLambda"),
                 Timeout = Duration.Seconds(30),
                 MemorySize = 512,
                 Environment = magicLinkEnv,

@@ -1,7 +1,7 @@
 # PADISSO architecture
 
-Five views of the same system: what runs in AWS, how identity is modelled, how the code is
-layered, and how the two non-obvious flows sequence.
+Six views of the same system: what runs in AWS, how identity is modelled, how the code is
+layered, how the two non-obvious flows sequence, and the literal project reference graph.
 
 Two CDK stacks: `PadiSsoPocStack` (the pool and its triggers) and `PadiSsoApiStack` (the
 management API behind API Gateway). The API stack takes the pool by reference, so CDK orders
@@ -148,19 +148,22 @@ signs up again, and the chosen name is still free because it never became an ali
 
 Dependencies point inward only. Nothing in `Domain` or `Application` references an AWS SDK.
 
+This view is conceptual and draws each Lambda's most significant edges. For the exact
+`ProjectReference` graph, see [6. Project references](#6-project-references).
+
 ```mermaid
 flowchart TD
     WEBAPI["src/Api — ASP.NET Core MVC<br/>controllers + contracts<br/>auth policies"]
 
     subgraph lam["src/Lambdas — thin adapters + composition roots"]
-        L1["DefineAuthChallenge"]
-        L2["CreateAuthChallenge"]
-        L3["VerifyAuthChallenge"]
-        L4["PostAuthentication"]
-        L8["PostConfirmation"]
-        L5["CustomEmailSender"]
-        L6["RequestMagicLink"]
-        L7["VerifyMagicLink"]
+        L1["DefineAuthChallengeLambda"]
+        L2["CreateAuthChallengeLambda"]
+        L3["VerifyAuthChallengeLambda"]
+        L4["PostAuthenticationLambda"]
+        L8["PostConfirmationLambda"]
+        L5["CustomEmailSenderLambda"]
+        L6["RequestMagicLinkLambda"]
+        L7["VerifyMagicLinkLambda"]
     end
 
     subgraph infra["src/Infrastructure — adapters, split per concern"]
@@ -219,17 +222,17 @@ only the AWS SDKs it uses. The published bundle sizes show what that buys:
 
 | Lambda | References | Size |
 |---|---|---|
-| `DefineAuthChallenge` | `Application` only | 249 KB |
-| `CreateAuthChallenge` | `Application` only | 245 KB |
-| `VerifyAuthChallenge` | `Application` only | 245 KB |
-| `PostAuthentication` | `+ Cognito`, `Core` | 5.0 MB |
-| `PostConfirmation` | `+ Cognito`, `Core` | 5.0 MB |
-| `VerifyMagicLink` | `+ DynamoDb` | 7.5 MB |
-| `RequestMagicLink` | `+ Notifications` | 9.4 MB |
-| `CustomEmailSender` | `+ Configuration`, `Kms`, `Messaging` | 30 MB |
+| `DefineAuthChallengeLambda` | `Application` only | 249 KB |
+| `CreateAuthChallengeLambda` | `Application` only | 245 KB |
+| `VerifyAuthChallengeLambda` | `Application` only | 245 KB |
+| `PostAuthenticationLambda` | `+ Cognito`, `Core` | 5.0 MB |
+| `PostConfirmationLambda` | `+ Cognito`, `Core` | 5.0 MB |
+| `VerifyMagicLinkLambda` | `+ DynamoDb` | 7.5 MB |
+| `RequestMagicLinkLambda` | `+ Notifications` | 9.4 MB |
+| `CustomEmailSenderLambda` | `+ Configuration`, `Kms`, `Messaging` | 30 MB |
 
 The three challenge triggers carry no AWS SDK at all. `Configuration` is separate from
-`Core` precisely so the Systems Manager SDK reaches only `CustomEmailSender` — one bundle
+`Core` precisely so the Systems Manager SDK reaches only `CustomEmailSenderLambda` — one bundle
 out of eight. Collapsing infrastructure into a single project would push every function
 toward that 30 MB.
 
@@ -309,3 +312,108 @@ becomes definition key `SignUp`, falling back to `Default` when that key is unse
 On `CustomEmailSender_UpdateUserAttribute` — the change-email flow — `userAttributes.email`
 carries the user's **new** address, so the code reaches the address being verified rather
 than the one still active for sign-in. Confirmed against the live pool.
+
+---
+
+## 6. Project references
+
+The build graph of `src/Padisso.sln` — every `ProjectReference` in the 19 `.csproj` files,
+and nothing inferred. Arrows point from the referencing project to the referenced one.
+
+```mermaid
+flowchart TD
+    subgraph entry["Runtime entry points — executables"]
+        API["Api"]
+        PA["PostAuthenticationLambda"]
+        PC["PostConfirmationLambda"]
+        RML["RequestMagicLinkLambda"]
+        VML["VerifyMagicLinkLambda"]
+        CES["CustomEmailSenderLambda"]
+        DAC["DefineAuthChallengeLambda"]
+        CAC["CreateAuthChallengeLambda"]
+        VAC["VerifyAuthChallengeLambda"]
+    end
+
+    subgraph infra["src/Infrastructure — libraries"]
+        CORE["Core"]
+        CFG["Configuration"]
+        COG["Cognito"]
+        DDB["DynamoDb"]
+        KMS["Kms"]
+        MSG["Messaging"]
+        NOT["Notifications"]
+    end
+
+    APP["Application"]
+    DOM["Domain"]
+
+    subgraph island["Not in the reference graph"]
+        CDK["Padisso — CDK app"]
+    end
+
+    %% All nine entry points reference Application directly, drawn once from the subgraph.
+    entry --> APP
+
+    API --> CORE
+    API --> COG
+    PA --> CORE
+    PA --> COG
+    PC --> CORE
+    PC --> COG
+    RML --> CORE
+    RML --> COG
+    RML --> DDB
+    RML --> NOT
+    VML --> CORE
+    VML --> COG
+    VML --> DDB
+    CES --> CORE
+    CES --> CFG
+    CES --> MSG
+    CES --> KMS
+
+    CFG --> CORE
+    CORE --> APP
+    COG --> APP
+    DDB --> APP
+    KMS --> APP
+    MSG --> APP
+    NOT --> APP
+
+    APP --> DOM
+```
+
+| Entry point | References |
+|---|---|
+| `Api`, `PostAuthenticationLambda`, `PostConfirmationLambda` | Application, Core, Cognito |
+| `RequestMagicLinkLambda` | Application, Core, Cognito, DynamoDb, Notifications |
+| `VerifyMagicLinkLambda` | Application, Core, Cognito, DynamoDb |
+| `CustomEmailSenderLambda` | Application, Core, Configuration, Messaging, Kms |
+| `DefineAuthChallengeLambda`, `CreateAuthChallengeLambda`, `VerifyAuthChallengeLambda` | Application |
+| `Padisso` | *(none)* |
+
+What the graph shows:
+
+- **`Padisso` has no project references** — only `Amazon.CDK.Lib` and `Constructs`. It is
+  coupled to the rest of the solution by *path*, pointing at the bundles
+  `publish-lambdas.ps1` produces. `dotnet build` therefore cannot catch a handler string
+  that names the wrong assembly, or a stale bundle: those surface at deploy or cold start.
+  Always publish before `cdk deploy`.
+- **Every entry point references `Application` directly**, not only through an adapter. The
+  three challenge triggers reference nothing else.
+- **No adapter is referenced by `Application` or `Domain`.** The inward dependency rule holds
+  structurally, with no analyzer needed to enforce it.
+- **`Configuration` → `Core` is the only edge inside the infrastructure tier**, and
+  `Configuration` is the one adapter that does not reference `Application` directly.
+- **Several adapters have a single consumer**: `Configuration`, `Messaging` and `Kms` serve
+  only `CustomEmailSenderLambda`; `Notifications` only `RequestMagicLinkLambda`; `DynamoDb` only the two
+  magic-link Lambdas. `Domain`'s only direct consumer is `Application` — everything else
+  reaches `UsernameRules` and `BirthdateRules` transitively.
+- In the solution file, only `Lambdas` and `Infrastructure` are solution folders; `Padisso`,
+  `Api`, `Application` and `Domain` sit at the root.
+
+To regenerate the edge list after adding a project:
+
+```bash
+grep -rn "ProjectReference Include" src --include=*.csproj
+```

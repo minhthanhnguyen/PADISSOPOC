@@ -35,9 +35,9 @@ src/
     Messaging/                  PADI messaging client, OAuth2 token provider
     Kms/                        EncryptionSdkCodeDecryptor
   Lambdas/                      thin adapters + per-function composition roots
-    DefineAuthChallenge/  CreateAuthChallenge/  VerifyAuthChallenge/
-    PostAuthentication/   PostConfirmation/     CustomEmailSender/
-    RequestMagicLink/     VerifyMagicLink/
+    DefineAuthChallengeLambda/  CreateAuthChallengeLambda/  VerifyAuthChallengeLambda/
+    PostAuthenticationLambda/   PostConfirmationLambda/     CustomEmailSenderLambda/
+    RequestMagicLinkLambda/     VerifyMagicLinkLambda/
   Api/                          ASP.NET Core management API, hosted in Lambda
   Padisso/                      CDK app — PadiSsoPocStack, PadiSsoApiStack
 web/                            React reference client (Vite + TypeScript)
@@ -85,7 +85,7 @@ Use cases take their ports through the constructor, so they can be exercised wit
 | Feature plan | `essentials` |
 | Sign-in alias | Username + **`preferred_username`**, case-insensitive |
 | Optional attributes | email, phone_number, given_name, **middle_name**, family_name, birthdate |
-| Custom attributes | `custom:padi_id`, `custom:affiliate_id`, `custom:last_login`, `custom:signup_username` |
+| Custom attributes | `custom:padi_id`, `custom:affiliate_id`, `custom:last_login`, `custom:signup_username`, `custom:affiliate_type_id` |
 | Password policy | 6+ chars, upper + lower required; digits and symbols not required |
 | Account recovery | Email and phone, no MFA |
 | Passkey relying party | `padi.com` |
@@ -107,6 +107,24 @@ updateUserAttributes({ preferred_username: "minh-new" })
 ```
 
 The staging attribute exists because **Cognito rejects `preferred_username` in a SignUp request while it is an alias** — the value can only be assigned after confirmation, which is what the `PostConfirmation` trigger is for.
+
+#### Adding custom attributes later
+
+Custom attributes **can** be added to a live pool. The CloudFormation reference is explicit: *"When you create or update a user pool, adding a schema attribute creates a custom or developer-only attribute"*, and every `SchemaAttribute` property is `Update requires: No interruption` — no replacement, no data loss.
+
+What cannot be done is **changing or removing an entry already in the schema**. `Required` and `Mutable` are fixed once an attribute exists, and attributes cannot be deleted. So the rule is: **append only, never edit or reorder.**
+
+That matters because CDK renders the `CustomAttributes` dictionary into an ordered `Schema` array. Reordering would present existing entries as modifications and fail the deploy. `custom:affiliate_type_id` was added last for this reason, and the synthesized schema confirms it is a pure append — the nine existing entries are unchanged, with the new one at index 9.
+
+Constraints when adding:
+
+- Name is **1–20 characters**, pattern `[\p{L}\p{M}\p{S}\p{N}\p{P}]+`
+- **50 custom attributes** per pool
+- Permanent: *"you can't remove or change it after you add it"*
+- Always optional — *"you can't require that users provide a value"*
+- Always a **string in the ID token**, whatever data type is declared
+
+The app client declares neither `ReadAttributes` nor `WriteAttributes`, so it defaults to all of them and a newly added attribute is readable and writable without a client change. Worth confirming on first use, since the docs also say new custom attributes need permissions set — the two statements sit awkwardly together and only a live check settles it.
 
 #### Name and date-of-birth attributes
 
