@@ -15,9 +15,11 @@ namespace Padi.Services.Authentication.Api.Controllers;
 /// unauthenticated surface is exactly the routes under this prefix and can be reviewed by
 /// looking at one place. Do not add a route here that acts on an existing account.
 ///
-/// Every action calls Cognito's own unauthenticated operations with the app client id, so a
-/// caller can do nothing here they could not do against Cognito directly. The exception is
-/// the username availability check inside sign-up, which uses the service's IAM role.
+/// Every action calls Cognito's own unauthenticated operations with the app client id. Two
+/// lookups use the service's IAM role (ListUsers) instead: the username availability check
+/// inside sign-up, and finding a pending sign-up for resend-by-username. The second lets a
+/// caller do one thing Cognito alone would not — reach an unconfirmed account by name — but
+/// its only effect is a code sent to that account's own address.
 /// </summary>
 [ApiController]
 [Route("public")]
@@ -25,6 +27,7 @@ namespace Padi.Services.Authentication.Api.Controllers;
 [Produces("application/json")]
 public sealed class RegistrationController(
     RegisterUser registerUser,
+    ResendRegistrationCode resendRegistrationCode,
     IUserRegistration registration,
     PoolContext pool) : ControllerBase
 {
@@ -74,6 +77,22 @@ public sealed class RegistrationController(
         [FromBody] ResendCodeRequest request, CancellationToken ct)
     {
         var destination = await registration.ResendCodeAsync(request.AccountId.Trim(), ct);
+        return Accepted(new CodeResentResponse(destination));
+    }
+
+    /// <summary>
+    /// Resend by the name chosen at sign-up, for a caller without the account id. Answers 202
+    /// whether or not a pending sign-up exists under the name — never 404 — so it cannot be
+    /// used to discover which names have one.
+    /// </summary>
+    [HttpPost("signup/resend-by-username")]
+    [ProducesResponseType(typeof(CodeResentResponse), StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<CodeResentResponse>> ResendByUsername(
+        [FromBody] ResendCodeByUsernameRequest request, CancellationToken ct)
+    {
+        var destination = await resendRegistrationCode.ExecuteAsync(
+            new ResendRegistrationCodeCommand(pool.UserPoolId, request.Username), ct);
         return Accepted(new CodeResentResponse(destination));
     }
 }

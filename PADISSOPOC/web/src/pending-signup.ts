@@ -2,13 +2,14 @@
  * Maps a chosen sign-up name to the opaque Cognito username behind it.
  *
  * `preferred_username` is only assigned once the account is confirmed, so between sign-up
- * and confirmation the account has no alias — the UUID is the only identifier that
+ * and confirmation the account has no alias — the account id is the only identifier that
  * `confirmSignUp` or `resendSignUpCode` will accept, and the user has never seen it.
  * Holding it here lets a reload, or a redirect from the login page, recover.
  *
- * Browser-local, so it does not survive a different device. A user who abandons
- * confirmation and returns elsewhere has to sign up again; the chosen name is still free
- * because it never became an alias.
+ * Browser-local, so it does not survive a different device. Elsewhere a code can still be
+ * resent by name through the API, but confirming needs this id, so a user who returns
+ * elsewhere has to sign up again; the chosen name is still free because it never became an
+ * alias.
  */
 const PREFIX = 'padisso.pending-signup.';
 

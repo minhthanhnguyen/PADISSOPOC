@@ -1,12 +1,17 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { confirmRegistration, resendRegistrationCode } from '../api-client';
+import {
+  confirmRegistration,
+  resendRegistrationCode,
+  resendRegistrationCodeByUsername,
+} from '../api-client';
 import { forgetAccountId, recallAccountId } from '../pending-signup';
 
+// A code can be resent from any browser, but confirming still needs the account id, which
+// only the browser that signed up holds.
 const UNKNOWN_ACCOUNT =
-  'No pending sign-up found for that name in this browser. An unconfirmed account has no ' +
-  'sign-in alias yet, so it can only be reached from the browser that created it — sign up ' +
-  'again to get a new code. The name is still available.';
+  'This browser did not start that sign-up, so the code cannot be entered here. Enter it in ' +
+  'the browser you signed up in, or sign up again here — the name is still available.';
 
 export default function ConfirmEmail() {
   const navigate = useNavigate();
@@ -66,17 +71,30 @@ export default function ConfirmEmail() {
     setError(null);
     setNotice(null);
 
-    const id = resolveAccountId();
-    if (!id) {
-      return;
+    // Prefer the id when this browser has one. Without it, resend by name and let the API
+    // find the pending sign-up — no dead end just because the id was never stored here.
+    const id = accountId || recallAccountId(chosenName);
+    if (id && !accountId) {
+      setAccountId(id);
     }
 
     try {
-      const { codeDestination } = await resendRegistrationCode(id);
+      if (id) {
+        const { codeDestination } = await resendRegistrationCode(id);
+        setNotice(
+          codeDestination
+            ? `A new code is on its way to ${codeDestination}.`
+            : 'A new code is on its way.',
+        );
+        return;
+      }
+
+      // The API answers the same whether or not a sign-up is pending under the name, so the
+      // notice must not claim one is.
+      await resendRegistrationCodeByUsername(chosenName.trim());
       setNotice(
-        codeDestination
-          ? `A new code is on its way to ${codeDestination}.`
-          : 'A new code is on its way.',
+        'If a sign-up is waiting under that name, a new code is on its way. Enter it in the ' +
+          'browser you signed up in.',
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

@@ -58,7 +58,9 @@ public sealed class RegisterUser(
         }
 
         var account = new NewAccount(
-            AccountId: identifiers.NewId(),
+            // Keyed by the chosen name so a pending sign-up can be found without the id —
+            // see AccountIdentifier. The unique part still comes from the factory.
+            AccountId: AccountIdentifier.Compose(username, identifiers.NewId()),
             ChosenUsername: username,
             Password: command.Password,
             Email: (command.Email ?? "").Trim(),

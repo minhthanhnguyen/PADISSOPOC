@@ -134,6 +134,7 @@ public sealed class Program
         builder.Services.AddSingleton<ChangeUsername>();
         builder.Services.AddSingleton<SetUserUsername>();
         builder.Services.AddSingleton<RegisterUser>();
+        builder.Services.AddSingleton<ResendRegistrationCode>();
         builder.Services.AddSingleton<IAuditLog, ConsoleAuditLog>();
         builder.Services.AddSingleton(new PoolContext(settings.UserPoolId, settings.AdminGroup));
     }

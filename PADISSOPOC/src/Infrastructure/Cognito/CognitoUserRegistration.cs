@@ -1,6 +1,7 @@
 using Amazon.CognitoIdentityProvider;
 using Amazon.CognitoIdentityProvider.Model;
 using Padi.Services.Authentication.Application.Abstractions;
+using Padi.Services.Authentication.Domain.Identity;
 
 namespace Padi.Services.Authentication.Infrastructure.Cognito;
 
@@ -12,8 +13,8 @@ public sealed record CognitoRegistrationOptions(string ClientId);
 /// than IAM credentials, which is what makes them safe behind public endpoints — a caller
 /// can do no more here than they could against Cognito directly.
 ///
-/// The one exception is <see cref="IsUsernameAvailableAsync"/>, which uses ListUsers and
-/// therefore does need IAM.
+/// The exceptions are <see cref="IsUsernameAvailableAsync"/> and
+/// <see cref="FindPendingAccountIdAsync"/>, which use ListUsers and therefore need IAM.
 /// </summary>
 public sealed class CognitoUserRegistration(
     IAmazonCognitoIdentityProvider cognito,
@@ -160,5 +161,32 @@ public sealed class CognitoUserRegistration(
         }, ct);
 
         return response.Users.Count == 0;
+    }
+
+    public async Task<string?> FindPendingAccountIdAsync(
+        string userPoolId, string chosenUsername, CancellationToken ct = default)
+    {
+        // The prefix is hex plus a hyphen, so it needs no escaping — the typed name itself
+        // never reaches the filter expression.
+        var response = await cognito.ListUsersAsync(new ListUsersRequest
+        {
+            UserPoolId = userPoolId,
+            Filter = $"username ^= \"{AccountIdentifier.PrefixFor(chosenUsername)}\"",
+            AttributesToGet = [StagedUsernameAttribute],
+            Limit = 60,
+        }, ct);
+
+        // The prefix only names candidates. A confirmed account can share it — its owner may
+        // have renamed away from a name someone else has since signed up with — and so can a
+        // second unconfirmed sign-up, because the availability check cannot see staged names.
+        // The newest pending one is the sign-up the caller most plausibly means, and the one
+        // the signing-up browser would have remembered.
+        return (response.Users ?? [])
+            .Where(u => u.UserStatus == UserStatusType.UNCONFIRMED)
+            .Where(u => (u.Attributes ?? []).Any(a =>
+                a.Name == StagedUsernameAttribute && AccountIdentifier.SameName(a.Value, chosenUsername)))
+            .OrderByDescending(u => u.UserCreateDate)
+            .Select(u => u.Username)
+            .FirstOrDefault();
     }
 }

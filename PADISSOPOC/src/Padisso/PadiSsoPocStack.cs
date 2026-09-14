@@ -236,7 +236,8 @@ namespace Padi.Services.Authentication
                 SelfSignUpEnabled = true,
                 SignInAliases = new SignInAliases
                 {
-                    // The real username is an opaque UUID the user never sees. Cognito
+                    // The real username is an opaque id the user never sees — a name-derived
+                    // key plus a UUID, see AccountIdentifier. Cognito
                     // fixes it at creation and it can never change, so it cannot be the
                     // name anyone types. preferred_username is the mutable alias they
                     // actually sign in with.

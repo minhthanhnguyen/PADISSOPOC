@@ -19,7 +19,7 @@ flowchart LR
 
     subgraph aws["AWS — us-west-2"]
         subgraph idp["Amazon Cognito"]
-            POOL["User Pool<br/>padi-sso-poc-user-pool<br/>opaque UUID username +<br/>mutable preferred_username alias<br/>case-insensitive · essentials"]
+            POOL["User Pool<br/>padi-sso-poc-user-pool<br/>opaque name-keyed id username +<br/>mutable preferred_username alias<br/>case-insensitive · essentials"]
             DOMAIN["Custom domain<br/>auth-poc-stage-v2.padi.com"]
         end
 
@@ -106,7 +106,7 @@ be misread by someone new to the codebase.
 | Identifier | Mutable | Who sees it | Role |
 |---|---|---|---|
 | `sub` | Never | Nobody | Cognito's internal id. Stable across everything |
-| `username` | Never | Nobody | An opaque UUID minted at sign-up. Cognito fixes it at creation |
+| `username` | Never | Nobody | An opaque id minted at sign-up, `<name key>-<uuid>`. Cognito fixes it at creation |
 | `preferred_username` | **Yes** | The user | The name they type to sign in. Unique pool-wide |
 | `email` | Yes | The user | A plain attribute — **not** an alias, so not unique |
 
@@ -122,11 +122,11 @@ sequenceDiagram
     participant P as PostConfirmation
 
     Note over U: user picks "minh9"
-    U->>C: signUp(username: "a7f3e2c1-…",<br/>custom:signup_username: "minh9")
+    U->>C: signUp(username: "9b1d…-a7f3e2c1-…",<br/>custom:signup_username: "minh9")
     Note over U,C: preferred_username is rejected here —<br/>Cognito forbids it in SignUp while it is an alias,<br/>so the chosen name is parked in a custom attribute
     C-->>U: CONFIRM_SIGN_UP
-    Note over U: UUID kept in localStorage —<br/>no alias exists yet, so it is the<br/>only way to reach the account
-    U->>C: confirmSignUp(username: "a7f3e2c1-…", code)
+    Note over U: account id kept in localStorage —<br/>no alias exists yet, so it is the<br/>only id Cognito accepts
+    U->>C: confirmSignUp(username: "9b1d…-a7f3e2c1-…", code)
     C->>P: PostConfirmation trigger
     P->>C: AdminUpdateUserAttributes<br/>preferred_username = "minh9"
     U->>C: signIn("minh9") ✓
@@ -137,10 +137,17 @@ sequenceDiagram
 ```
 
 The gap between sign-up and confirmation is the sharp edge: the account has no alias yet, so
-the UUID is the only identifier `confirmSignUp` and `resendSignUpCode` accept — and the user
-has never seen it. `web/src/pending-signup.ts` holds it in `localStorage` so a reload or a
-login-page redirect recovers. Confirming on a different device is not possible; the user
-signs up again, and the chosen name is still free because it never became an alias.
+the account id is the only identifier `confirmSignUp` and `resendSignUpCode` accept — and the
+user has never seen it. `web/src/pending-signup.ts` holds it in `localStorage` so a reload or
+a login-page redirect recovers.
+
+The id's prefix is a hash of the chosen name (`AccountIdentifier`), which is what makes
+`POST /public/signup/resend-by-username` possible from any browser: one `ListUsers` call
+filtered on `username ^= "<key>-"`, then an exact `custom:signup_username` match. A lookup
+that finds nothing still calls Cognito with the name, so the response is Cognito's simulated
+one and does not reveal whether a sign-up is pending. Confirming on a different device is
+still not possible — confirm takes the id — so there the user signs up again, and the chosen
+name is still free because it never became an alias.
 
 ---
 

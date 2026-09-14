@@ -140,6 +140,14 @@ public sealed class ResendCodeRequest
     public string AccountId { get; init; } = "";
 }
 
+public sealed class ResendCodeByUsernameRequest
+{
+    /// <summary>The name chosen at sign-up — not the account id.</summary>
+    [Required(AllowEmptyStrings = false)]
+    [MaxLength(128)]
+    public string Username { get; init; } = "";
+}
+
 /// <summary>Query parameters for the user listing.</summary>
 public sealed class ListUsersQuery
 {

@@ -9,8 +9,9 @@ public sealed class SystemClock : IClock
 }
 
 /// <summary>
-/// Account identifiers as GUIDs. Opaque and collision-free without coordination, which is
-/// what the Cognito username needs to be — it is fixed at creation and can never change.
+/// The unique part of an account identifier, as a GUID. Collision-free without coordination,
+/// which is what the Cognito username needs — it is fixed at creation and can never change.
+/// <c>RegisterUser</c> prefixes it with a key derived from the chosen name.
 /// </summary>
 public sealed class GuidIdentifierFactory : IIdentifierFactory
 {

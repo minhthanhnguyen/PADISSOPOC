@@ -94,10 +94,10 @@ Use cases take their ports through the constructor, so they can be exercised wit
 
 Cognito's `username` can never change: *"After you create a user, you can't change the value of the `username` attribute."* No pool setting alters that. The mechanism AWS documents is `preferred_username` configured as an **alias attribute** — a secondary sign-in identifier the user can update.
 
-So the account's real username is an **opaque UUID the user never sees**, and `preferred_username` is the name they type. The sequence:
+So the account's real username is an **opaque id the user never sees** — a key derived from the chosen name, a hyphen, then a UUID — and `preferred_username` is the name they type. The sequence:
 
 ```
-signUp(username: "a7f3e2c1-…", custom:signup_username: "minh9")
+signUp(username: "9b1d…-a7f3e2c1-…", custom:signup_username: "minh9")
   → confirmSignUp
   → PostConfirmation promotes custom:signup_username into preferred_username
   → signIn("minh9")
@@ -158,15 +158,36 @@ Validation is therefore ours to enforce, in two places that must agree:
 | `src/Domain/Identity/UsernameRules.cs` | Enforced by the `PostConfirmation` trigger, which throws rather than write an unusable alias |
 | `web/src/username-rules.ts` | Enforced by `/signup` and `/change-username` before any Cognito call |
 
-Sign-up cannot rely on Cognito to catch a bad name: the account's username is a UUID, so `signUp` succeeds regardless and the problem only appears once `PostConfirmation` promotes the staged value.
+Sign-up cannot rely on Cognito to catch a bad name: the account's username is a generated id, so `signUp` succeeds regardless and the problem only appears once `PostConfirmation` promotes the staged value.
 
 One divergence is handled explicitly. **.NET applies these Unicode categories per UTF-16 code unit**, so an emoji is seen as a surrogate pair and rejected, while JavaScript's `/u` flag matches by code point and would accept it. The browser rule rejects astral-plane characters outright so both sides agree — erring strict, because the cost is choosing another name rather than a confirmation that throws after the account exists.
 
 Three further consequences worth knowing:
 
 - **Uniqueness is enforced by Cognito.** Alias values must be unique pool-wide, so a taken name is rejected on update. No application-level check needed — unlike `email`, which is a plain attribute and *is* duplicable.
-- **An unconfirmed account has no alias yet.** Between sign-up and confirmation the UUID is the only identifier `confirmSignUp` and `resendSignUpCode` accept, and the user has never seen it. The client keeps it in `localStorage` (`web/src/pending-signup.ts`) so a reload or a login-page redirect can recover. Abandoning confirmation and returning on another device means signing up again — the chosen name is still free, because it never became an alias.
+- **An unconfirmed account has no alias yet.** Between sign-up and confirmation the account id is the only identifier `confirmSignUp` and `resendSignUpCode` accept, and the user has never seen it. The client keeps it in `localStorage` (`web/src/pending-signup.ts`) so a reload or a login-page redirect can recover. On another device a code can still be [resent by name](#resend-by-username), but confirming needs the id, so finishing there means signing up again — the chosen name is still free, because it never became an alias.
 - **Magic links are issued against the immutable username**, not the alias the caller supplied, so a username change between requesting a link and following it does not break redemption.
+
+#### Resend by username
+
+`POST /public/signup/resend-by-username` takes the name chosen at sign-up instead of the account id. It exists because an unconfirmed account cannot be looked up by name through Cognito alone: the name is staged in `custom:signup_username`, and **`ListUsers` cannot filter on custom attributes**, while `preferred_username` is only assigned at confirmation.
+
+So the account id carries the lookup key. [`AccountIdentifier`](src/Domain/Identity/AccountIdentifier.cs) builds it as the first 16 hex characters of SHA-256 over the lowercased name, a hyphen, then a UUID — 53 characters, inside Cognito's 128. `username` *is* filterable with a starts-with match, so the lookup is one call:
+
+```
+ListUsers  Filter: username ^= "<key>-"   AttributesToGet: custom:signup_username
+  → keep UNCONFIRMED users whose staged name matches, case-insensitively
+  → newest first
+```
+
+- **The prefix only names candidates.** It records the sign-up name and is never updated, so a confirmed account whose owner has since renamed can share it, and so can a second pending sign-up — the availability check cannot see staged names. Status and the staged name are always verified, and the **newest** pending sign-up wins, which is also the one the signing-up browser would remember.
+- **It does not reveal whether a sign-up is pending.** When the lookup finds nothing, the typed name is passed to `ResendConfirmationCode` anyway, so Cognito's existence protection answers with a simulated destination. The route returns `202` in both cases and never `404`. A name that is a *confirmed* account's alias gets Cognito's "already confirmed" error — the same fact sign-up discloses by refusing the name.
+- **The typed name never reaches the filter expression.** Only the hex key does, so there is nothing to escape.
+- **Accounts created before this id format are not findable** by name. Their ids are bare UUIDs; the route still answers `202`, but no code arrives.
+- **The key is not a secret.** It is a hash, not the name, so a renamed-away name is not legible in the id — but a short name can be recovered by hashing guesses.
+- **Confirmation still takes the id.** A code resent on another device cannot be entered there; the page says so rather than implying otherwise.
+
+No infrastructure change was needed: the API role already holds `cognito-idp:ListUsers` for the availability check, and the route sits under the existing `/public/{proxy+}` resource.
 
 ### Authentication methods
 
@@ -279,6 +300,7 @@ Two route groups, separated by **authority rather than by feature**:
 | `POST /public/signup` | anonymous | Creates an unconfirmed account; returns `accountId` |
 | `POST /public/signup/confirm` | anonymous | Confirms with the emailed code |
 | `POST /public/signup/resend` | anonymous | Sends a replacement code |
+| `POST /public/signup/resend-by-username` | anonymous | Same, finding the pending sign-up by chosen name. Always `202` — see [Resend by username](#resend-by-username) |
 | `GET /me` | `caller` | Profile from the caller's own token |
 | `PATCH /me` | `caller` | `given_name`, `middle_name`, `family_name`, `birthdate` — all optional; omit to leave, send `""` to clear |
 | `PUT /me/username` | `caller` | `preferred_username`, validated |
@@ -296,7 +318,7 @@ Two route groups, separated by **authority rather than by feature**:
 
 Registration and sign-in cannot sit behind the authorizer — a token is what they produce. Those routes live under a single `/public` prefix, mapped in API Gateway as **its own resource with `AuthorizationType.NONE`** while everything else stays behind the Cognito authorizer. The unauthenticated surface is therefore exactly the routes under that prefix, reviewable by looking at `RegistrationController`, `SessionController` and one block in the stack. *Nothing under `/public` may act on an existing account without the caller proving control of it* — sign-in qualifies because it requires the password.
 
-The registration routes call Cognito's own unauthenticated operations (`SignUp`, `ConfirmSignUp`, `ResendConfirmationCode`) with the app client id and no IAM credentials, so an anonymous caller can do nothing there they could not already do against Cognito directly. Two things need the service role: the username availability check inside sign-up, and sign-in.
+The registration routes call Cognito's own unauthenticated operations (`SignUp`, `ConfirmSignUp`, `ResendConfirmationCode`) with the app client id and no IAM credentials. Three things need the service role: the username availability check inside sign-up, the pending-sign-up lookup behind [resend by username](#resend-by-username), and sign-in. The lookup is the one place an anonymous caller can do something Cognito alone would not allow — reach an unconfirmed account by the name chosen for it — and its only effect is a code sent to that account's own address.
 
 ### Password reset
 
@@ -707,7 +729,7 @@ A minimal React reference client lives in `web/` — Vite, TypeScript, and AWS A
 | Route | Purpose |
 |---|---|
 | `/signup` | Username, password and email required; first name, middle initial, last name and date of birth optional. Posts to the management API's `/public/signup`, not to Cognito |
-| `/confirm` | 6-digit code, via the API's `/public/signup/confirm` and `/public/signup/resend`. Resolves the chosen name to the opaque account id via `localStorage` |
+| `/confirm` | 6-digit code, via the API's `/public/signup/confirm` and `/public/signup/resend`. Resolves the chosen name to the opaque account id via `localStorage`; with no stored id, resend falls back to `/public/signup/resend-by-username` |
 | `/login` | Username + password, via the API's `/public/login`. Tokens are bridged into Amplify |
 | `/forgot-password` | Two-step reset via the API's `/public/password/forgot` and `/public/password/reset` |
 | `/passwordless` | Choice-based `USER_AUTH` — email OTP, SMS OTP, or passkey |
@@ -753,7 +775,7 @@ npm run dev --prefix web
 - **Cognito's default email sender caps at 50 messages/day**, which covers these verification codes — the first thing to hit if you test signup repeatedly.
 - **No hosted UI involvement.** The client calls the Cognito API directly, so `callbackUrls` is not used. Add `http://localhost:5173` to `callbackUrls` in `cdk.json` before wiring up social sign-in through the hosted UI.
 - **Registration, sign-in and password reset go through the API; the rest still goes to Cognito.** `/signup`, `/confirm`, `/login` and `/forgot-password` no longer import Amplify at all. Passwordless, magic link, passkeys and the signed-in profile pages still call Cognito directly.
-- **The whole registration flow goes through the API; everything else still goes to Cognito.** `/signup` and `/confirm` call `VITE_API_BASE_URL` + `/public/signup`, `/public/signup/confirm` and `/public/signup/resend` through `web/src/api-client.ts`. The opaque account id is minted server-side rather than by `crypto.randomUUID()` in the browser, and neither page imports Amplify any more. Sign-in, password reset, passwordless and the signed-in pages still use Amplify directly.
+- **The whole registration flow goes through the API; everything else still goes to Cognito.** `/signup` and `/confirm` call `VITE_API_BASE_URL` + `/public/signup`, `/public/signup/confirm`, `/public/signup/resend` and `/public/signup/resend-by-username` through `web/src/api-client.ts`. The opaque account id is minted server-side rather than by `crypto.randomUUID()` in the browser, and neither page imports Amplify any more. Sign-in, password reset, passwordless and the signed-in pages still use Amplify directly.
 - **`VITE_API_BASE_URL` is the API root, not the public prefix.** Route paths add their own `/public`, `/me` or `/admin`, so the base is `https://api.global-np.padi.com/p/padi-auth-poc` and sign-up lands on `https://api.global-np.padi.com/p/padi-auth-poc/public/signup`. Pasting the quoted public URL — which ends in `/public` — produces `/public/public/signup` and a bare 404, so `api-client.ts` throws at load with an explanatory message instead. Point it at `http://localhost:5080` to run the UI against a locally hosted API.
 - **Resend now names the destination.** The API returns the masked address Cognito reported, so the page says "A new code is on its way to `m***@g***.com`" instead of a bare acknowledgement — useful when the user is unsure which address they signed up with.
 - **CORS needs both halves.** API Gateway's `DefaultCorsPreflightOptions` answers only the OPTIONS preflight; with a Lambda proxy integration the actual response is whatever the app returns, so the API sets `Access-Control-Allow-Origin` itself from `ALLOWED_ORIGINS`. Preflight passing while every real call fails is the symptom of having only one half.
@@ -820,7 +842,7 @@ This is a proof of concept. Before production:
 
 - **The V2 pool is deployed but the mutable-username flows are untested.** Sign-up, password reset and change email were proven against the *previous* pool, before `preferred_username` existed. The triggers and messaging path are unchanged so they should carry over, but nothing in the new design has been exercised. Test sign-up first: it now spans `signUp` → `PostConfirmation` → alias assignment, the longest untried path in the system, and the only one that can leave an account unreachable if it fails.
 - **The previous pool is orphaned, not deleted.** `RemovalPolicy.RETAIN` means CloudFormation left it behind when the logical ID changed. It still holds the old test accounts and the `auth-stage-v2.padi.com` custom domain, and it still bills for anything the feature plan charges. Delete it once nothing depends on it.
-- **Confirmation is browser-bound.** Between sign-up and confirmation an account has no `preferred_username`, so the opaque UUID is the only identifier Cognito accepts, and it lives in `localStorage`. A user who abandons confirmation and returns on another device cannot finish; they sign up again, and the chosen name is still free. Acceptable for a POC — a production flow should confirm by emailed link carrying the id, or auto-confirm via `PreSignUp` and verify email separately.
+- **Confirmation is browser-bound.** Between sign-up and confirmation an account has no `preferred_username`, so the opaque account id is the only identifier Cognito accepts for confirmation, and it lives in `localStorage`. A user who returns on another device can have the code [resent by name](#resend-by-username) but cannot finish confirming; they sign up again, and the chosen name is still free. Acceptable for a POC — a production flow should confirm by emailed link carrying the id, or auto-confirm via `PreSignUp` and verify email separately.
 - **No route has been exercised by a signed-in user.** The whole public surface is verified against the deployed API — `/public/health`, sign-up validation, confirm, resend, login, and both password routes all return the expected statuses, with CORS headers on real responses. `/me` and `/admin/users` correctly return `401` without a token, but nothing has been called *with* one: the pool has no users and nobody is in `padi-sso-admins`. Both authorization policies, the `IssuedForClient` requirement, and every `/me` and `/admin` Cognito call remain unproven.
 - **The API session never refreshes.** `session.ts` stores the refresh token but never exchanges it, so the session simply expires after `expiresIn` (one hour) and the user signs in again. Amplify's own refresh machinery is bypassed because the custom token provider returns stored tokens rather than a refreshable session. Implementing this means calling Cognito's `REFRESH_TOKEN_AUTH`, most cleanly as another API route.
 - **`/public/login` is unthrottled per caller and returns a refresh token to the browser.** Two things follow. Sign-in is the classic brute-force target and the only limit in front of it is the per-stage throttle, which one client can consume alone — it needs a WAF rate-based rule keyed on source IP, and a per-method throttle at minimum. And the refresh token is returned in the response body, matching what Amplify already does with tokens it obtains itself; a hardened deployment would put it in an `HttpOnly` cookie so script cannot read it, which also means the endpoint would need to move off a cross-origin call or gain credentialed CORS.

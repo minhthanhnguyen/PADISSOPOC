@@ -95,6 +95,15 @@ export async function resendRegistrationCode(accountId: string): Promise<CodeRes
   return post<CodeResent>('/public/signup/resend', { accountId });
 }
 
+/**
+ * Resend by the name chosen at sign-up, for when this browser does not hold the account id —
+ * a different device, or cleared storage. The API answers identically whether or not a
+ * pending sign-up exists under the name, so success does not prove that one does.
+ */
+export async function resendRegistrationCodeByUsername(username: string): Promise<CodeResent> {
+  return post<CodeResent>('/public/signup/resend-by-username', { username });
+}
+
 /** Always succeeds for a well-formed request, whether or not the account exists. */
 export async function requestPasswordReset(username: string): Promise<PasswordResetStarted> {
   return post<PasswordResetStarted>('/public/password/forgot', { username });

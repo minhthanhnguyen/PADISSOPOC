@@ -35,6 +35,16 @@ public interface IUserRegistration
     Task<string?> ResendCodeAsync(string accountId, CancellationToken ct = default);
 
     /// <summary>
+    /// The id of the newest unconfirmed account registered under <paramref name="chosenUsername"/>,
+    /// or null when there is none. Uses IAM (ListUsers), like the availability check.
+    ///
+    /// Relies on the name-derived id prefix, so accounts created before that format existed
+    /// are never found. See <c>AccountIdentifier</c>.
+    /// </summary>
+    Task<string?> FindPendingAccountIdAsync(
+        string userPoolId, string chosenUsername, CancellationToken ct = default);
+
+    /// <summary>
     /// Whether a name is free to become a <c>preferred_username</c>.
     ///
     /// Needed because the alias is only assigned at confirmation: without this check two
