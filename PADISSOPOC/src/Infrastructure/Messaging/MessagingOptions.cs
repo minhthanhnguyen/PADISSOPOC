@@ -4,16 +4,24 @@ using Padi.Services.Authentication.Application.Abstractions;
 namespace Padi.Services.Authentication.Infrastructure.Messaging;
 
 /// <summary>
-/// Bound from the "Messaging" configuration section. Non-secret settings arrive as
-/// environment variables, credentials from SSM Parameter Store — indistinguishable here
-/// by design.
+/// Bound from the "Messaging" configuration section. The endpoints, credentials and
+/// template ids come from SSM Parameter Store, the sender address from an environment
+/// variable — indistinguishable here by design.
+///
+/// Property names are the parameter names: <c>/padi/services/authentication/Messaging/MessagingApiUrl</c>
+/// becomes the key <c>Messaging:MessagingApiUrl</c> and binds here without any mapping.
+/// Renaming a property therefore means renaming the parameter too.
 /// </summary>
 public sealed class MessagingOptions
 {
     public const string SectionName = "Messaging";
 
-    [Required] public string EmailUrl { get; set; } = "";
-    [Required] public string TokenUrl { get; set; } = "";
+    /// <summary>The full transactional email endpoint, path included — nothing is appended.</summary>
+    [Required] public string MessagingApiUrl { get; set; } = "";
+
+    /// <summary>The OAuth2 token endpoint for the client-credentials grant.</summary>
+    [Required] public string MessagingApiTokenUrl { get; set; } = "";
+
     [Required] public string ClientId { get; set; } = "";
     [Required] public string ClientSecret { get; set; } = "";
 

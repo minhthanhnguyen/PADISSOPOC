@@ -17,6 +17,7 @@ namespace Padi.Services.Authentication
         public UserPool UserPool { get; }
         public UserPoolClient UserPoolClient { get; }
         public UserPoolDomain UserPoolDomain { get; }  // null while customDomainEnabled is false
+        public UserPoolDomain PrefixDomain { get; }    // null while cognitoDomainPrefix is unset
 
 
         internal PadiSsoPocStack(Construct scope, string id, IStackProps props = null) : base(scope, id, props)
@@ -43,13 +44,32 @@ namespace Padi.Services.Authentication
             var passkeyRelyingPartyId = (string)Node.TryGetContext("passkeyRelyingPartyId");
             var cognitoDomainHost    = new System.Uri((string)Node.TryGetContext("cognitoDomain")).Host;
             var cognitoDomainCertArn = (string)Node.TryGetContext("cognitoDomainCertArn");
+            var cognitoDomainPrefix  = ((string)Node.TryGetContext("cognitoDomainPrefix") ?? "").Trim();
+            var prefixBrandingName   = ((string)Node.TryGetContext("cognitoDomainPrefixBranding") ?? "managed-login").Trim().ToLowerInvariant();
+            var prefixBranding = prefixBrandingName switch
+            {
+                "managed-login" => ManagedLoginVersion.NEWER_MANAGED_LOGIN,
+                "classic"       => ManagedLoginVersion.CLASSIC_HOSTED_UI,
+                _ => throw new System.ArgumentException(
+                    $"Unknown cognitoDomainPrefixBranding '{prefixBrandingName}' in cdk.json. Expected: managed-login or classic."),
+            };
+
+            // Checked here rather than left to CloudFormation, which only reports a bad prefix
+            // partway through a deploy. Cognito additionally rejects prefixes containing
+            // reserved words such as aws, amazon or cognito, and ones already taken in the
+            // region — neither can be known before deploying.
+            if (cognitoDomainPrefix.Length > 0 &&
+                !System.Text.RegularExpressions.Regex.IsMatch(cognitoDomainPrefix, "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"))
+            {
+                throw new System.ArgumentException(
+                    $"cognitoDomainPrefix '{cognitoDomainPrefix}' must be 1-63 lowercase letters, digits or hyphens, " +
+                    "not starting or ending with a hyphen.");
+            }
             var callbackUrls        = ((object[])Node.TryGetContext("callbackUrls")).Select(u => u.ToString()).ToArray();
             var logoutUrls          = ((object[])Node.TryGetContext("logoutUrls")).Select(u => u.ToString()).ToArray();
             var magicLinkBaseUrl    = (string)Node.TryGetContext("magicLinkBaseUrl");
             var magicLinkEmailFrom  = (string)Node.TryGetContext("magicLinkEmailFrom");
             var magicLinkSmsSenderId = (string)Node.TryGetContext("magicLinkSmsSenderId");
-            var messagingEmailUrl   = (string)Node.TryGetContext("messagingEmailUrl");
-            var messagingTokenUrl   = (string)Node.TryGetContext("messagingTokenUrl");
             var magicLinkAllowedOrigins = ((object[])Node.TryGetContext("magicLinkAllowedOrigins")
                     ?? System.Array.Empty<object>())
                 .Select(o => o.ToString()!).ToArray();
@@ -115,26 +135,26 @@ namespace Padi.Services.Authentication
             });
             codeKey.GrantEncrypt(new ServicePrincipal("cognito-idp.amazonaws.com"));
 
-            // Credentials live under this SSM path and are loaded by the configuration
-            // provider at runtime, so they never appear in GetFunctionConfiguration output.
-            // Parameter names map onto configuration keys: the path prefix is stripped, so
-            // /padi/services/authentication/Messaging/ClientId becomes "Messaging:ClientId",
-            // the same key an env var would produce.
+            // The messaging endpoints and credentials live under this SSM path and are loaded
+            // by the configuration provider at runtime, so they never appear in
+            // GetFunctionConfiguration output and change without a redeploy. Parameter names
+            // map onto configuration keys: the path prefix is stripped, so
+            // /padi/services/authentication/Messaging/MessagingApiUrl becomes
+            // "Messaging:MessagingApiUrl", the same key an env var would produce.
             const string configParameterPath = "/padi/services/authentication";
 
             var messagingEnv = new Dictionary<string, string>
             {
                 ["CONFIG_PARAMETER_PATH"]   = configParameterPath,
-                ["Messaging__EmailUrl"]     = messagingEmailUrl,
-                ["Messaging__TokenUrl"]     = messagingTokenUrl,
                 ["Messaging__FromAddress"]  = magicLinkEmailFrom,
                 ["KEY_ARN"]                 = codeKey.KeyArn,
             };
 
-            // Template ids are deliberately NOT set here. They live in SSM under
-            // <configParameterPath>/Messaging/Definitions/<TriggerSource>, and because
-            // LambdaHost applies environment variables after SSM, an env var of the same
-            // name would silently shadow the parameter.
+            // The API and token URLs, and the template ids, are deliberately NOT set here.
+            // They live in SSM under <configParameterPath>/Messaging/ — MessagingApiUrl,
+            // MessagingApiTokenUrl and Definitions/<TriggerSource> — and because LambdaHost
+            // applies environment variables after SSM, an env var of the same name would
+            // silently shadow the parameter.
 
             var customEmailSenderFn = new Function(this, "CustomEmailSenderFn", new FunctionProps
             {
@@ -278,12 +298,11 @@ namespace Padi.Services.Authentication
                     // parked here and promoted by the PostConfirmation trigger.
                     ["signup_username"] = new StringAttribute(new StringAttributeProps { Mutable = true }),
                     // Written by the PostAuthentication trigger on every sign-in.
-                    ["last_login"]   = new StringAttribute(new StringAttributeProps { Mutable = true }),
-                    // Appended, never inserted. CDK renders this dictionary into an ordered
-                    // Schema array, and Cognito accepts additions to an existing pool but
-                    // rejects changes to entries already in it — so reordering would look
-                    // like a modification and fail the deploy. New attributes go last.
+                    ["last_login"]   = new StringAttribute(new StringAttributeProps { Mutable = true }),                    
                     ["affiliate_type_id"] = new StringAttribute(new StringAttributeProps { Mutable = true }),
+                    ["delegate"]          = new StringAttribute(new StringAttributeProps { Mutable = true }),                 
+                    ["guardian_email"]    = new StringAttribute(new StringAttributeProps { Mutable = true }),                    
+                    ["source_client_id"]  = new StringAttribute(new StringAttributeProps { Mutable = true }),
                 },
                 PasswordPolicy = new PasswordPolicy
                 {
@@ -592,6 +611,40 @@ namespace Padi.Services.Authentication
                 Cors = magicLinkCors,
             });
 
+            // A second domain, on Cognito's own amazoncognito.com host. It needs no DNS record
+            // or certificate, so the hosted pages stay reachable even if the custom domain's
+            // DNS or certificate breaks. Each domain carries its own branding version, so this
+            // one can use managed login while the custom domain stays on classic Hosted UI.
+            if (cognitoDomainPrefix.Length > 0)
+            {
+                PrefixDomain = UserPool.AddDomain("PadissoPrefixDomain", new UserPoolDomainOptions
+                {
+                    CognitoDomain = new CognitoDomainOptions { DomainPrefix = cognitoDomainPrefix },
+                    ManagedLoginVersion = prefixBranding,
+                });
+
+                // Serialised behind the custom domain so a fresh deploy never runs two domain
+                // operations against the same pool at once.
+                if (UserPoolDomain != null)
+                {
+                    PrefixDomain.Node.AddDependency(UserPoolDomain);
+                }
+
+                if (prefixBranding == ManagedLoginVersion.NEWER_MANAGED_LOGIN)
+                {
+                    // Managed login renders from a style attached to the app client, which
+                    // classic Hosted UI never needed. Cognito's provided defaults keep the pages
+                    // usable until PADI branding exists. A client holds one style: if one was
+                    // already made in the console, delete it first or this conflicts on deploy.
+                    new CfnManagedLoginBranding(this, "PadissoManagedLoginBranding", new CfnManagedLoginBrandingProps
+                    {
+                        UserPoolId = UserPool.UserPoolId,
+                        ClientId = UserPoolClient.UserPoolClientId,
+                        UseCognitoProvidedValues = true,
+                    });
+                }
+            }
+
             new CfnOutput(this, "UserPoolId", new CfnOutputProps
             {
                 Value = UserPool.UserPoolId,
@@ -613,6 +666,15 @@ namespace Padi.Services.Authentication
                     Value = UserPoolDomain.DomainName,
                     Description = "Cognito Hosted UI Domain",
                     ExportName = "PadissoUserPoolDomain",
+                });
+            }
+
+            if (PrefixDomain != null)
+            {
+                new CfnOutput(this, "UserPoolPrefixDomainUrl", new CfnOutputProps
+                {
+                    Value = PrefixDomain.BaseUrl(),
+                    Description = $"Cognito prefix domain ({prefixBrandingName})",
                 });
             }
 

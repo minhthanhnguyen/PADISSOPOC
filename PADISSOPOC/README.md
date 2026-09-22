@@ -85,7 +85,7 @@ Use cases take their ports through the constructor, so they can be exercised wit
 | Feature plan | `essentials` |
 | Sign-in alias | Username + **`preferred_username`**, case-insensitive |
 | Optional attributes | email, phone_number, given_name, **middle_name**, family_name, birthdate |
-| Custom attributes | `custom:padi_id`, `custom:affiliate_id`, `custom:last_login`, `custom:signup_username`, `custom:affiliate_type_id` |
+| Custom attributes | `custom:padi_id`, `custom:affiliate_id`, `custom:last_login`, `custom:signup_username`, `custom:affiliate_type_id`, `custom:delegate`, `custom:guardian_email`, `custom:source_client_id` — all strings, all mutable |
 | Password policy | 6+ chars, upper + lower required; digits and symbols not required |
 | Account recovery | Email and phone, no MFA |
 | Passkey relying party | `padi.com` |
@@ -114,7 +114,9 @@ Custom attributes **can** be added to a live pool. The CloudFormation reference 
 
 What cannot be done is **changing or removing an entry already in the schema**. `Required` and `Mutable` are fixed once an attribute exists, and attributes cannot be deleted. So the rule is: **append only, never edit or reorder.**
 
-That matters because CDK renders the `CustomAttributes` dictionary into an ordered `Schema` array. Reordering would present existing entries as modifications and fail the deploy. `custom:affiliate_type_id` was added last for this reason, and the synthesized schema confirms it is a pure append — the nine existing entries are unchanged, with the new one at index 9.
+That matters because CDK renders the `CustomAttributes` dictionary into an ordered `Schema` array. Reordering would present existing entries as modifications and fail the deploy. Attributes added to the live pool were appended for this reason, and each time the synthesized schema was diffed against the previous one to confirm a pure append: `custom:affiliate_type_id` went in at index 9 with the nine earlier entries unchanged, then `custom:delegate`, `custom:guardian_email` and `custom:source_client_id` at indexes 10–12 with the first ten unchanged.
+
+Two of those deserve a note. **`custom:guardian_email` is not a contact attribute** — custom attributes cannot be verified, so Cognito never checks, sends to, or de-duplicates it. **`custom:source_client_id` is mutable** even though it reads like a creation-time fact: an immutable custom attribute can only be written when a user is created, and that setting is permanent, so it could never be filled in for accounts that already exist.
 
 Constraints when adding:
 
@@ -418,7 +420,7 @@ The decryptor sets `CommitmentPolicy = REQUIRE_ENCRYPT_ALLOW_DECRYPT`. Cognito e
 OAuth2 client credentials. The token request posts a **JSON** body — not the more usual `application/x-www-form-urlencoded` — with credentials in an HTTP Basic header:
 
 ```
-POST <messagingTokenUrl>
+POST <Messaging:MessagingApiTokenUrl>
 Authorization: Basic base64(clientId:clientSecret)
 Content-Type: application/json
 
@@ -488,7 +490,8 @@ Each Lambda has a `Composition` class that builds an `IConfiguration` and a serv
 
 | Source | Produces key |
 |---|---|
-| Env var `Messaging__EmailUrl` | `Messaging:EmailUrl` |
+| Env var `Messaging__FromAddress` | `Messaging:FromAddress` |
+| SSM `/padi/services/authentication/Messaging/MessagingApiUrl` | `Messaging:MessagingApiUrl` |
 | SSM `/padi/services/authentication/Messaging/ClientId` | `Messaging:ClientId` |
 | SSM `/padi/services/authentication/Messaging/Definitions/SignUp` | `Messaging:Definitions:SignUp` |
 
@@ -507,7 +510,7 @@ LambdaConfiguration.FromEnvironment();
 Values are read through `IConfiguration` or bound onto an options class:
 
 ```csharp
-var url = configuration["Messaging:EmailUrl"];
+var url = configuration["Messaging:MessagingApiUrl"];
 var sender = Composition.Resolve<SendCognitoMessage>();
 ```
 
@@ -531,13 +534,13 @@ All environment-specific values live in the `context` block of `cdk.json`.
 | `enabledIdps` | Any of `google`, `apple`, `facebook`, `amazon`, `microsoft` |
 | `cognitoDomain` | Hosted UI custom domain |
 | `cognitoDomainCertArn` | ACM certificate ARN — must be in **us-east-1** |
+| `cognitoDomainPrefix` | Optional second domain, `https://<prefix>.auth.<region>.amazoncognito.com` — currently `padi-sso-poc`. Needs no DNS or certificate. Lowercase letters, digits and hyphens; must also be free in the region and avoid reserved words such as `aws` or `cognito`, which only a deploy can confirm. Omit to create no prefix domain |
+| `cognitoDomainPrefixBranding` | `managed-login` (default) or `classic`, for the prefix domain only — the custom domain stays on classic Hosted UI. `managed-login` also creates a style for the app client using Cognito's provided defaults |
 | `callbackUrls` / `logoutUrls` | OAuth redirect targets |
 | `magicLinkBaseUrl` | Landing page that receives `?token=` |
 | `magicLinkEmailFrom` | Sender address — verified SES identity, also used as `Messaging:FromAddress` |
 | `magicLinkSmsSenderId` | Optional SMS sender ID (unsupported in the US) |
 | `magicLinkAllowedOrigins` | CORS origins permitted to call the Function URLs |
-| `messagingEmailUrl` | PADI messaging service transactional email endpoint |
-| `messagingTokenUrl` | OAuth2 token endpoint for the messaging service |
 | `apiName` | REST API name |
 | `apiStageName` | Deployment stage — appears in the `execute-api` URL, hidden behind a custom domain |
 | `apiDomainName` | An **existing** custom domain to attach to. Empty leaves the API on its `execute-api` URL |
@@ -591,7 +594,19 @@ Leave `apiDomainName` empty and the mapping is skipped entirely — the API is r
 
 ### SSM Parameter Store
 
-Messaging credentials are read at runtime, not baked into the template. Create them once — CloudFormation cannot create `SecureString` parameters:
+The messaging endpoints and credentials are read at runtime, not baked into the template. **Create them before deploying**: `MessagingOptions` requires all four, so a missing one fails `CustomEmailSender` — and with it every Cognito email, including sign-up confirmation and password reset.
+
+The two endpoints are plain `String` parameters. `MessagingApiUrl` is the **full** transactional email endpoint, path included — nothing is appended to it:
+
+```bash
+aws ssm put-parameter --name /padi/services/authentication/Messaging/MessagingApiUrl --type String --value "https://messaging-stage.global-np.padi.com/v1/email/transact" --region us-west-2
+```
+
+```bash
+aws ssm put-parameter --name /padi/services/authentication/Messaging/MessagingApiTokenUrl --type String --value "https://api-stage.global-np.padi.com/auth/api/oauth2/token" --region us-west-2
+```
+
+The credentials are `SecureString`, which CloudFormation cannot create:
 
 ```bash
 aws ssm put-parameter --name /padi/services/authentication/Messaging/ClientId --type SecureString --value "<client-id>" --region us-west-2

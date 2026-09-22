@@ -35,7 +35,7 @@ public sealed class MessagingEmailSender(
     };
 
     public Task SendAsync(EmailRequest request, CancellationToken ct = default) =>
-        PostAsync(options.CurrentValue.EmailUrl, new EmailProxyRequest
+        PostAsync(options.CurrentValue.MessagingApiUrl, new EmailProxyRequest
         {
             ContactKey = request.ContactKey,
             DefinitionKey = request.TemplateKey,

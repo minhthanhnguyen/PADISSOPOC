@@ -45,7 +45,7 @@ public sealed class BearerTokenProvider(HttpClient http, IOptionsMonitor<Messagi
                 tokenRequest["scope"] = o.Scope;
             }
 
-            using var request = new HttpRequestMessage(HttpMethod.Post, o.TokenUrl)
+            using var request = new HttpRequestMessage(HttpMethod.Post, o.MessagingApiTokenUrl)
             {
                 Content = JsonContent.Create(tokenRequest),
             };

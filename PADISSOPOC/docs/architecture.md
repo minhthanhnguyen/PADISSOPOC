@@ -20,7 +20,8 @@ flowchart LR
     subgraph aws["AWS — us-west-2"]
         subgraph idp["Amazon Cognito"]
             POOL["User Pool<br/>padi-sso-poc-user-pool<br/>opaque name-keyed id username +<br/>mutable preferred_username alias<br/>case-insensitive · essentials"]
-            DOMAIN["Custom domain<br/>auth-poc-stage-v2.padi.com"]
+            DOMAIN["Custom domain · classic Hosted UI<br/>auth-poc-stage-v2.padi.com"]
+            PREFIXDOMAIN["Prefix domain · managed login<br/>padi-sso-poc.auth.us-west-2.amazoncognito.com"]
         end
 
         subgraph triggers["Cognito trigger Lambdas (.NET 10, ARM-free x64, 30s)"]
@@ -56,6 +57,8 @@ flowchart LR
     UI -->|"USER_SRP_AUTH · SignUp · OTP · WebAuthn"| POOL
     UI -.->|"hosted UI / social"| DOMAIN
     DOMAIN --- POOL
+    UI -.->|"managed login"| PREFIXDOMAIN
+    PREFIXDOMAIN --- POOL
 
     POOL --> DEFINE
     POOL --> CREATE
@@ -88,7 +91,7 @@ flowchart LR
     VER -->|"conditional delete (single use)"| DDB
     VER -->|"AdminInitiateAuth CUSTOM_AUTH"| POOL
 
-    EMAILSENDER -.->|"client id / secret / templates"| SSM
+    EMAILSENDER -.->|"API + token URLs / client id / secret / templates"| SSM
     REQ -.-> SM
     VER -.-> SM
 ```
@@ -304,7 +307,7 @@ sequenceDiagram
     participant M as PADI messaging API
 
     C->>S: trigger + KMS-encrypted code
-    S->>P: Messaging:ClientId / ClientSecret / Definitions:*
+    S->>P: Messaging:MessagingApiUrl / MessagingApiTokenUrl /<br/>ClientId / ClientSecret / Definitions:*
     S->>K: decrypt code
     Note over S,K: commitment policy<br/>REQUIRE_ENCRYPT_ALLOW_DECRYPT<br/>Cognito uses a non-committing suite
     S->>T: POST { "grant_type": "client_credentials" } + Basic auth
