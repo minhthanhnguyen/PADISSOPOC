@@ -8,17 +8,17 @@ namespace Padi.Services.Authentication.Api.Controllers;
 /// <summary>
 /// Password sign-in. Anonymous by necessity — a token is what this produces.
 ///
-/// Sits under the same `/public` prefix as registration, so the unauthenticated surface
-/// stays reviewable in one place. Unlike the registration routes it *does* act on an
+/// An open route: listed in the gateway's openRoutes in PadiSsoApiStack, the one place the
+/// unauthenticated surface is declared. Unlike the registration routes it *does* act on an
 /// existing account, but only for a caller who proves control of it with the password.
 /// </summary>
 [ApiController]
-[Route("public")]
+[Route("login")]
 [AllowAnonymous]
 [Produces("application/json")]
 public sealed class SessionController(IPasswordAuthenticator authenticator, IAuditLog audit) : ControllerBase
 {
-    [HttpPost("login")]
+    [HttpPost]
     [ProducesResponseType(typeof(LoginResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]

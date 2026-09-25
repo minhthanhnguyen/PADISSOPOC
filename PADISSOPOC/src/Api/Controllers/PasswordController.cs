@@ -12,11 +12,13 @@ namespace Padi.Services.Authentication.Api.Controllers;
 /// browser could not already do against Cognito directly. What the API adds is a single
 /// throttled, audited entry point.
 ///
+/// Open routes: both are listed in the gateway's openRoutes in PadiSsoApiStack.
+///
 /// A password *change* by a signed-in user who knows their current password is a different
-/// operation and does not belong on the public surface — it would go under `/me`.
+/// operation and does not belong on the open surface — it would go under `/me`.
 /// </summary>
 [ApiController]
-[Route("public/password")]
+[Route("password")]
 [AllowAnonymous]
 [Produces("application/json")]
 public sealed class PasswordController(IPasswordReset reset, IAuditLog audit) : ControllerBase

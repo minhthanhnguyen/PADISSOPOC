@@ -39,7 +39,7 @@ flowchart LR
         end
 
         subgraph apigw["PadiSsoApiStack — separate stack"]
-            GW["API Gateway REST · regional<br/>/public/* → no authorizer<br/>everything else → Cognito authorizer<br/>api.global-np.padi.com/p/padi-auth-poc<br/>stage throttle"]
+            GW["API Gateway REST · regional<br/>8 named open routes → no authorizer<br/>everything else → Cognito authorizer<br/>api.global-np.padi.com/p/padi-auth-poc<br/>stage throttle"]
             API["Api — ASP.NET Core MVC in Lambda<br/>Registration · Session · Me · AdminUsers"]
         end
 
@@ -73,7 +73,7 @@ flowchart LR
     UI -->|"GET /verify?token"| VER
 
     UI -->|"Bearer access token"| GW
-    UI -->|"/public/login · signup · confirm · resend<br/>no token — none exists yet"| GW
+    UI -->|"/signup · /login · /password/*<br/>no token — none exists yet"| GW
     GW -->|"authorizer validates,<br/>then proxy integration"| API
     GW -.->|"validates token against"| POOL
     API -->|"/me — caller's access token"| POOL
@@ -145,7 +145,7 @@ user has never seen it. `web/src/pending-signup.ts` holds it in `localStorage` s
 a login-page redirect recovers.
 
 The id's prefix is a hash of the chosen name (`AccountIdentifier`), which is what makes
-`POST /public/signup/resend-by-username` possible from any browser: one `ListUsers` call
+`POST /signup/resend-by-username` possible from any browser: one `ListUsers` call
 filtered on `username ^= "<key>-"`, then an exact `custom:signup_username` match. A lookup
 that finds nothing still calls Cognito with the name, so the response is Cognito's simulated
 one and does not reveal whether a sign-up is pending. Confirming on a different device is

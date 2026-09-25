@@ -17,16 +17,16 @@ public sealed class Program
     {
         var builder = WebApplication.CreateBuilder(args);
 
-        ConfigureServices(builder);
+        var settings = ConfigureServices(builder);
 
         var app = builder.Build();
 
-        Configure(app);
+        Configure(app, settings);
 
         app.Run();
     }
 
-    private static void ConfigureServices(WebApplicationBuilder builder)
+    private static ApiSettings ConfigureServices(WebApplicationBuilder builder)
     {
         // API Gateway REST APIs use the v1 proxy payload. Running outside Lambda this is a
         // no-op and the app starts under Kestrel as usual.
@@ -52,6 +52,8 @@ public sealed class Program
 
         builder.Services.AddProblemDetails();
         builder.Services.AddExceptionHandler<DirectoryExceptionHandler>();
+
+        return settings;
     }
 
     public const string CorsPolicy = "browser-clients";
@@ -139,10 +141,24 @@ public sealed class Program
         builder.Services.AddSingleton(new PoolContext(settings.UserPoolId, settings.AdminGroup));
     }
 
-    private static void Configure(WebApplication app)
+    private static void Configure(WebApplication app, ApiSettings settings)
     {
         app.UseExceptionHandler();
         app.UseStatusCodePages();
+
+        // The open routes are named gateway resources, which reach the Lambda with the
+        // custom domain's base path still attached — /p/padi-auth-poc/login rather than
+        // /login. UsePathBase strips it; requests without the prefix pass through untouched.
+        if (settings.BasePath is { } basePath)
+        {
+            app.UsePathBase(basePath);
+        }
+
+        // Explicit, and after UsePathBase. WebApplication otherwise inserts routing at the
+        // very start of the pipeline, which would match endpoints against the unstripped
+        // path and 404 every prefixed request.
+        app.UseRouting();
+
         // Before authentication, so a 401 still carries CORS headers and the browser can
         // read the status instead of reporting an opaque network error.
         app.UseCors(CorsPolicy);

@@ -90,6 +90,10 @@ namespace Padi.Services.Authentication
                     // the header on the real response, so it needs the same origin list.
                     ["ALLOWED_ORIGINS"] = string.Join(",", allowedOrigins),
                     ["ASPNETCORE_ENVIRONMENT"] = "Production",
+                    // Requests to the named open routes below arrive with the custom domain's
+                    // base path still attached; the API strips this prefix before routing.
+                    // Empty when there is no custom domain, where no prefix is added.
+                    ["API_BASE_PATH"] = string.IsNullOrWhiteSpace(domainName) ? "" : "/" + basePath.Trim('/'),
                 },
             });
 
@@ -109,7 +113,7 @@ namespace Padi.Services.Authentication
                     "cognito-idp:AdminListGroupsForUser",
                     "cognito-idp:AdminAddUserToGroup",
                     "cognito-idp:AdminRemoveUserFromGroup",
-                    // Backs /public/login via ADMIN_USER_PASSWORD_AUTH.
+                    // Backs /login via ADMIN_USER_PASSWORD_AUTH.
                     "cognito-idp:AdminInitiateAuth",
                 },
                 Resources = new[] { props.UserPool.UserPoolArn },
@@ -155,18 +159,36 @@ namespace Padi.Services.Authentication
                 Proxy = true,
             });
 
-            // Health check lives at /public/health, under the proxy resource below, rather
-            // than as its own /health resource. A non-greedy resource forwards the request
-            // with the custom domain's base path still attached, which ASP.NET routing does
-            // not match — it 404s in AWS while working locally.
+            // ─── The unauthenticated surface ───────────────────────────────────────────
+            // Every route that skips the Cognito authorizer, and nothing else. A caller
+            // cannot hold a token before signing up or in, so these cannot sit behind it.
+            //
+            // Named one by one, method included, rather than opened by prefix: anything not
+            // listed falls through to the root {proxy+} below and needs a token. A route
+            // added to the API but forgotten here therefore fails closed with a 401 — it
+            // never becomes open by accident. Each one must also carry [AllowAnonymous] in
+            // the API, which re-checks independently. Keep in step with the README table.
+            var openRoutes = new (string Method, string Path)[]
+            {
+                ("POST", "signup"),
+                ("POST", "signup/confirm"),
+                ("POST", "signup/resend"),
+                ("POST", "signup/resend-by-username"),
+                ("POST", "login"),
+                ("POST", "password/forgot"),
+                ("POST", "password/reset"),
+                ("GET",  "health"),
+            };
 
-            // Registration: a user cannot hold a token before their account exists, so these
-            // routes cannot sit behind the authorizer. Declared as its own resource rather
-            // than by exempting paths inside the API, which keeps the unauthenticated
-            // surface visible here and in RegistrationController — a more specific resource
-            // takes precedence over the root {proxy+} below.
-            RestApi.Root.AddResource("public").AddResource("{proxy+}").AddMethod("ANY", integration,
-                new MethodOptions { AuthorizationType = AuthorizationType.NONE });
+            // These are non-greedy resources, which reach the Lambda with the custom
+            // domain's base path still on the request path. The API strips it using
+            // API_BASE_PATH (set above); without that, every route here 404s in AWS while
+            // working locally.
+            foreach (var (method, path) in openRoutes)
+            {
+                RestApi.Root.ResourceForPath(path).AddMethod(method, integration,
+                    new MethodOptions { AuthorizationType = AuthorizationType.NONE });
+            }
 
             // Everything else goes through the pool authorizer. The API re-validates the
             // token itself — see the comment in src/Api/Program.cs for why.

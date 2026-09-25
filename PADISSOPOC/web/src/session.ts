@@ -1,5 +1,5 @@
 /**
- * Tokens obtained from the management API's `/public/login`.
+ * Tokens obtained from the management API's `/login`.
  *
  * Amplify's own sign-in stores its tokens itself. This holds the ones the API hands back, so
  * the two are bridged rather than parallel: `auth-config.ts` installs a token provider that

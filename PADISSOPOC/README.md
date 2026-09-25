@@ -172,7 +172,7 @@ Three further consequences worth knowing:
 
 #### Resend by username
 
-`POST /public/signup/resend-by-username` takes the name chosen at sign-up instead of the account id. It exists because an unconfirmed account cannot be looked up by name through Cognito alone: the name is staged in `custom:signup_username`, and **`ListUsers` cannot filter on custom attributes**, while `preferred_username` is only assigned at confirmation.
+`POST /signup/resend-by-username` takes the name chosen at sign-up instead of the account id. It exists because an unconfirmed account cannot be looked up by name through Cognito alone: the name is staged in `custom:signup_username`, and **`ListUsers` cannot filter on custom attributes**, while `preferred_username` is only assigned at confirmation.
 
 So the account id carries the lookup key. [`AccountIdentifier`](src/Domain/Identity/AccountIdentifier.cs) builds it as the first 16 hex characters of SHA-256 over the lowercased name, a hyphen, then a UUID — 53 characters, inside Cognito's 128. `username` *is* filterable with a starts-with match, so the lookup is one call:
 
@@ -189,7 +189,7 @@ ListUsers  Filter: username ^= "<key>-"   AttributesToGet: custom:signup_usernam
 - **The key is not a secret.** It is a hash, not the name, so a renamed-away name is not legible in the id — but a short name can be recovered by hashing guesses.
 - **Confirmation still takes the id.** A code resent on another device cannot be entered there; the page says so rather than implying otherwise.
 
-No infrastructure change was needed: the API role already holds `cognito-idp:ListUsers` for the availability check, and the route sits under the existing `/public/{proxy+}` resource.
+The API role already holds `cognito-idp:ListUsers` for the availability check, so the only infrastructure it needs is its entry in the gateway's [open routes](#the-open-surface).
 
 ### Authentication methods
 
@@ -291,18 +291,27 @@ The gateway is **regional**, matching the endpoint type of the custom domain it 
 
 WAF attaches to the API *stage* with a **REGIONAL**-scoped WAFv2 ACL in the API's region. That is true of either endpoint type, so the reason REST was chosen over HTTP API does not depend on this setting.
 
-Two route groups, separated by **authority rather than by feature**:
+Routes are grouped by **authority rather than by feature**.
+
+#### Open routes — no token
+
+**These eight are the entire unauthenticated surface.** Each is listed by name, with its method, in `openRoutes` in [`PadiSsoApiStack.cs`](src/Padisso/PadiSsoApiStack.cs), and each controller carries `[AllowAnonymous]`. Change one, change both — and this table.
+
+| Route | |
+|---|---|
+| `POST /signup` | Creates an unconfirmed account; returns `accountId` |
+| `POST /signup/confirm` | Confirms with the emailed code |
+| `POST /signup/resend` | Sends a replacement code |
+| `POST /signup/resend-by-username` | Same, finding the pending sign-up by chosen name. Always `202` — see [Resend by username](#resend-by-username) |
+| `POST /login` | Password sign-in; returns id, access and refresh tokens |
+| `POST /password/forgot` | Starts a reset; always 202 with a masked destination |
+| `POST /password/reset` | Completes it with the code and a new password |
+| `GET /health` | Liveness. Reveals nothing |
+
+#### Token routes — Cognito authorizer
 
 | Route | Policy | |
 |---|---|---|
-| `GET /public/health` | anonymous | Liveness. Reveals nothing |
-| `POST /public/login` | anonymous | Password sign-in; returns id, access and refresh tokens |
-| `POST /public/password/forgot` | anonymous | Starts a reset; always 202 with a masked destination |
-| `POST /public/password/reset` | anonymous | Completes it with the code and a new password |
-| `POST /public/signup` | anonymous | Creates an unconfirmed account; returns `accountId` |
-| `POST /public/signup/confirm` | anonymous | Confirms with the emailed code |
-| `POST /public/signup/resend` | anonymous | Sends a replacement code |
-| `POST /public/signup/resend-by-username` | anonymous | Same, finding the pending sign-up by chosen name. Always `202` — see [Resend by username](#resend-by-username) |
 | `GET /me` | `caller` | Profile from the caller's own token |
 | `PATCH /me` | `caller` | `given_name`, `middle_name`, `family_name`, `birthdate` — all optional; omit to leave, send `""` to clear |
 | `PUT /me/username` | `caller` | `preferred_username`, validated |
@@ -316,15 +325,22 @@ Two route groups, separated by **authority rather than by feature**:
 | `POST /admin/users/{u}/reset-password` | `administrator` | Forces reset, sends a code |
 | `GET`/`PUT`/`DELETE /admin/users/{u}/groups[/{g}]` | `administrator` | Group membership |
 
-### The public surface
+### The open surface
 
-Registration and sign-in cannot sit behind the authorizer — a token is what they produce. Those routes live under a single `/public` prefix, mapped in API Gateway as **its own resource with `AuthorizationType.NONE`** while everything else stays behind the Cognito authorizer. The unauthenticated surface is therefore exactly the routes under that prefix, reviewable by looking at `RegistrationController`, `SessionController` and one block in the stack. *Nothing under `/public` may act on an existing account without the caller proving control of it* — sign-in qualifies because it requires the password.
+Registration, sign-in and password reset cannot sit behind the authorizer — a token is what they produce. They used to share a `/public` prefix, which the gateway opened as one wildcard resource. They now sit at the API root, and the gateway opens them **one named route at a time**: `openRoutes` in the stack gives each its own resource and method with `AuthorizationType.NONE`, while the root `{proxy+}` sends everything else through the Cognito authorizer.
+
+That is stricter than the prefix was, in two ways:
+
+- **It fails closed.** A route added to the API but not to `openRoutes` reaches the authorizer and gets a `401`. Under the old wildcard, *any* action placed under `/public` was open the moment it was deployed.
+- **Methods are pinned.** `GET /signup` is not open just because `POST /signup` is.
+
+The API checks independently: every open action carries `[AllowAnonymous]`, and everything else requires a valid token even if the gateway were misconfigured. *No open route may act on an existing account without the caller proving control of it* — sign-in qualifies because it requires the password.
 
 The registration routes call Cognito's own unauthenticated operations (`SignUp`, `ConfirmSignUp`, `ResendConfirmationCode`) with the app client id and no IAM credentials. Three things need the service role: the username availability check inside sign-up, the pending-sign-up lookup behind [resend by username](#resend-by-username), and sign-in. The lookup is the one place an anonymous caller can do something Cognito alone would not allow — reach an unconfirmed account by the name chosen for it — and its only effect is a code sent to that account's own address.
 
 ### Password reset
 
-`/public/password/forgot` and `/public/password/reset` wrap Cognito's `ForgotPassword` and `ConfirmForgotPassword`. Both are client-id-only, so unlike sign-in they need no IAM — routing them through the API buys throttling and one audited entry point, not extra privilege.
+`/password/forgot` and `/password/reset` wrap Cognito's `ForgotPassword` and `ConfirmForgotPassword`. Both are client-id-only, so unlike sign-in they need no IAM — routing them through the API buys throttling and one audited entry point, not extra privilege.
 
 Enumeration protection depends on the pool's `PreventUserExistenceErrors`, and the documented behaviour is specific enough to be worth recording:
 
@@ -341,7 +357,7 @@ A password *change* by a signed-in user who knows their current password is a di
 
 ### Sign-in runs as an admin flow
 
-`/public/login` uses **`ADMIN_USER_PASSWORD_AUTH`** via `AdminInitiateAuth`, not `USER_PASSWORD_AUTH`. The app client keeps `UserPassword = false` and gains `AdminUserPassword = true`.
+`/login` uses **`ADMIN_USER_PASSWORD_AUTH`** via `AdminInitiateAuth`, not `USER_PASSWORD_AUTH`. The app client keeps `UserPassword = false` and gains `AdminUserPassword = true`.
 
 That choice is the point of the endpoint. `USER_PASSWORD_AUTH` is a client-id-only flow: enabling it would let anyone holding the public client id authenticate with a plaintext password straight against Cognito, bypassing this API together with its throttling and any WAF in front of it. `ADMIN_USER_PASSWORD_AUTH` requires IAM credentials, so only the API's execution role can use it and sign-in can only happen through the front door.
 
@@ -556,15 +572,19 @@ All environment-specific values live in the `context` block of `cdk.json`.
 The API does **not** own a domain. It claims a base path under one that already exists:
 
 ```
-https://api.global-np.padi.com/p/padi-auth-poc/public/signup
-                                              └── the API sees /public/signup
+https://api.global-np.padi.com/p/padi-auth-poc/signup
+                                              └── the API routes /signup
 ```
 
-API Gateway strips the mapped path before matching resources, so routes are written as if the API were at a domain root and nothing in the code changes when the path does.
+API Gateway strips the mapped path before matching resources, so routes are written as if the API were at a domain root. The API itself still has to strip it for the open routes — see below.
 
 Only an `AWS::ApiGatewayV2::ApiMapping` is created — no domain, no certificate. Those belong to whoever owns the domain, and `cdk destroy` removes the mapping without touching it. That is why `apiDomainCertArn` no longer exists.
 
-**Only greedy resources survive the base path.** Every gateway route is a `{proxy+}` resource. A dedicated non-greedy resource — `/health` originally was one — reaches the Lambda with the base path still on the request path, and ASP.NET routing finds nothing: the endpoint 404s in AWS while working perfectly under Kestrel. The hosting layer reconstructs the path correctly from the resource template and proxy parameter, which only exist for greedy resources. Health therefore lives at `/public/health`. Adding a route directly under the API root will hit the same wall.
+**Named resources arrive with the base path still attached, so the API strips it.** The hosting layer rebuilds the request path from the resource template for a greedy `{proxy+}` resource, which drops the base path. For a named, non-greedy resource it uses the raw request path, which still includes it: `/p/padi-auth-poc/health`. ASP.NET routing then finds nothing, and the route 404s in AWS while working perfectly under Kestrel — which is what happened when `/health` was first given its own resource.
+
+Every open route is now a named resource, so the stack passes the base path to the function as `API_BASE_PATH`, and `Program.cs` calls `UsePathBase` with it followed by an explicit `UseRouting()`. The order matters: `WebApplication` otherwise inserts routing at the start of the pipeline, where it would match against the unstripped path. Requests through `{proxy+}` don't carry the prefix and pass through untouched, as do requests to the `execute-api` URL, where `API_BASE_PATH` is empty.
+
+**If `apiBasePath` changes, redeploy the API stack** — the value reaches the function only through its environment.
 
 **The V2 resource is required, not a preference.** `apiBasePath` has two segments, and `AWS::ApiGateway::BasePathMapping` only supports one. AWS is explicit: *"To create API mappings with multiple levels, you must use `AWS::ApiGatewayV2`."* The V1 resource synthesizes a multi-level path without complaint and fails at deploy, so this is not something CDK will catch for you. Multi-level mappings also require the domain to be **Regional with the TLS 1.2 security policy** — `api.global-np.padi.com` is both.
 
@@ -743,10 +763,10 @@ A minimal React reference client lives in `web/` — Vite, TypeScript, and AWS A
 
 | Route | Purpose |
 |---|---|
-| `/signup` | Username, password and email required; first name, middle initial, last name and date of birth optional. Posts to the management API's `/public/signup`, not to Cognito |
-| `/confirm` | 6-digit code, via the API's `/public/signup/confirm` and `/public/signup/resend`. Resolves the chosen name to the opaque account id via `localStorage`; with no stored id, resend falls back to `/public/signup/resend-by-username` |
-| `/login` | Username + password, via the API's `/public/login`. Tokens are bridged into Amplify |
-| `/forgot-password` | Two-step reset via the API's `/public/password/forgot` and `/public/password/reset` |
+| `/signup` | Username, password and email required; first name, middle initial, last name and date of birth optional. Posts to the management API's `/signup`, not to Cognito |
+| `/confirm` | 6-digit code, via the API's `/signup/confirm` and `/signup/resend`. Resolves the chosen name to the opaque account id via `localStorage`; with no stored id, resend falls back to `/signup/resend-by-username` |
+| `/login` | Username + password, via the API's `/login`. Tokens are bridged into Amplify |
+| `/forgot-password` | Two-step reset via the API's `/password/forgot` and `/password/reset` |
 | `/passwordless` | Choice-based `USER_AUTH` — email OTP, SMS OTP, or passkey |
 | `/magic-link` | Requests a link; manual token redemption as a fallback |
 | `/verify` | Where the emailed link lands — redeems the token automatically and shows a placeholder signed-in page |
@@ -780,21 +800,21 @@ npm run dev --prefix web
 
 ### Notes
 
-- **Sign-in goes through the API, and its tokens are bridged into Amplify.** `/login` posts to `/public/login`; the tokens come back in the response body, not through Amplify's own sign-in. Rather than run two parallel sessions — which would leave the profile pages and passkeys working only for an SRP login — `auth-config.ts` installs a **custom `tokenProvider`** that prefers the API session from `web/src/session.ts` when present and otherwise defers to `cognitoUserPoolsTokenProvider`. Downstream code (`fetchAuthSession`, `fetchUserAttributes`, `getCurrentUser`, the profile pages) is unaware of which route produced the session.
+- **Sign-in goes through the API, and its tokens are bridged into Amplify.** `/login` posts to `/login`; the tokens come back in the response body, not through Amplify's own sign-in. Rather than run two parallel sessions — which would leave the profile pages and passkeys working only for an SRP login — `auth-config.ts` installs a **custom `tokenProvider`** that prefers the API session from `web/src/session.ts` when present and otherwise defers to `cognitoUserPoolsTokenProvider`. Downstream code (`fetchAuthSession`, `fetchUserAttributes`, `getCurrentUser`, the profile pages) is unaware of which route produced the session.
 
   Sign-out must clear **both** stores, API session first: the provider prefers it, so leaving it behind would have Amplify keep reporting a signed-in user after `signOut()`.
 
   Note this gives up SRP for the password path. The app client still has `USER_PASSWORD_AUTH` disabled — the API uses `ADMIN_USER_PASSWORD_AUTH` under its IAM role — but the password now travels browser → API → Cognito rather than never leaving the browser. The passwordless and magic-link pages still use Amplify directly and are unaffected.
-- **A 403 from `/public/login` routes to `/confirm`.** Correct password, unconfirmed account — the login page sends the user to finish confirmation instead of showing a dead end.
+- **A 403 from `/login` routes to `/confirm`.** Correct password, unconfirmed account — the login page sends the user to finish confirmation instead of showing a dead end.
 - **Email verification is enforced by the pool.** `AutoVerify` is on for email, so `signUp` returns a `CONFIRM_SIGN_UP` next step and Cognito emails a code. Sign-in fails until `confirmSignUp` succeeds. The login page detects an unconfirmed account and routes back to `/confirm`.
 - **Cognito's default email sender caps at 50 messages/day**, which covers these verification codes — the first thing to hit if you test signup repeatedly.
 - **No hosted UI involvement.** The client calls the Cognito API directly, so `callbackUrls` is not used. Add `http://localhost:5173` to `callbackUrls` in `cdk.json` before wiring up social sign-in through the hosted UI.
 - **Registration, sign-in and password reset go through the API; the rest still goes to Cognito.** `/signup`, `/confirm`, `/login` and `/forgot-password` no longer import Amplify at all. Passwordless, magic link, passkeys and the signed-in profile pages still call Cognito directly.
-- **The whole registration flow goes through the API; everything else still goes to Cognito.** `/signup` and `/confirm` call `VITE_API_BASE_URL` + `/public/signup`, `/public/signup/confirm`, `/public/signup/resend` and `/public/signup/resend-by-username` through `web/src/api-client.ts`. The opaque account id is minted server-side rather than by `crypto.randomUUID()` in the browser, and neither page imports Amplify any more. Sign-in, password reset, passwordless and the signed-in pages still use Amplify directly.
-- **`VITE_API_BASE_URL` is the API root, not the public prefix.** Route paths add their own `/public`, `/me` or `/admin`, so the base is `https://api.global-np.padi.com/p/padi-auth-poc` and sign-up lands on `https://api.global-np.padi.com/p/padi-auth-poc/public/signup`. Pasting the quoted public URL — which ends in `/public` — produces `/public/public/signup` and a bare 404, so `api-client.ts` throws at load with an explanatory message instead. Point it at `http://localhost:5080` to run the UI against a locally hosted API.
+- **The whole registration flow goes through the API; everything else still goes to Cognito.** `/signup` and `/confirm` call `VITE_API_BASE_URL` + `/signup`, `/signup/confirm`, `/signup/resend` and `/signup/resend-by-username` through `web/src/api-client.ts`. The opaque account id is minted server-side rather than by `crypto.randomUUID()` in the browser, and neither page imports Amplify any more. Sign-in, password reset, passwordless and the signed-in pages still use Amplify directly.
+- **`VITE_API_BASE_URL` is the API root.** Route paths are appended to it, so the base is `https://api.global-np.padi.com/p/padi-auth-poc` and sign-up lands on `https://api.global-np.padi.com/p/padi-auth-poc/signup`. An older `.env.local` ending in `/public` — the prefix the open routes used to have — would produce `/public/signup`, which the gateway sends through the authorizer and rejects with an unexplained `401`; `api-client.ts` throws at load with an explanatory message instead. Point it at `http://localhost:5080` to run the UI against a locally hosted API.
 - **Resend now names the destination.** The API returns the masked address Cognito reported, so the page says "A new code is on its way to `m***@g***.com`" instead of a bare acknowledgement — useful when the user is unsure which address they signed up with.
 - **CORS needs both halves.** API Gateway's `DefaultCorsPreflightOptions` answers only the OPTIONS preflight; with a Lambda proxy integration the actual response is whatever the app returns, so the API sets `Access-Control-Allow-Origin` itself from `ALLOWED_ORIGINS`. Preflight passing while every real call fails is the symptom of having only one half.
-- **Password reset does not reveal whether an account exists.** `/public/password/forgot` always answers `202` with a masked destination, because Cognito fabricates one for an unknown username rather than failing. Verified through the UI: `not-a-real-user-8kq` produced *"A reset code is on its way to `+*******6812`"*. The reset step reports a wrong code and an unknown user identically. Don't "improve" either by surfacing a not-found error — that reintroduces enumeration.
+- **Password reset does not reveal whether an account exists.** `/password/forgot` always answers `202` with a masked destination, because Cognito fabricates one for an unknown username rather than failing. Verified through the UI: `not-a-real-user-8kq` produced *"A reset code is on its way to `+*******6812`"*. The reset step reports a wrong code and an unknown user identically. Don't "improve" either by surfacing a not-found error — that reintroduces enumeration.
 - **Changing email needs a session refresh.** The ID token caches the `email` claim, so `/change-email` calls `fetchAuthSession({ forceRefresh: true })` after confirming. Without it the dashboard keeps showing the old address even though the pool has the new one.
 - **Email is not unique.** It is an attribute, not a sign-in alias, so Cognito will not stop two accounts holding the same address. `/change-email` only rejects re-entering the account's *current* address. Enforce uniqueness in the app if it matters.
 
@@ -858,12 +878,12 @@ This is a proof of concept. Before production:
 - **The V2 pool is deployed but the mutable-username flows are untested.** Sign-up, password reset and change email were proven against the *previous* pool, before `preferred_username` existed. The triggers and messaging path are unchanged so they should carry over, but nothing in the new design has been exercised. Test sign-up first: it now spans `signUp` → `PostConfirmation` → alias assignment, the longest untried path in the system, and the only one that can leave an account unreachable if it fails.
 - **The previous pool is orphaned, not deleted.** `RemovalPolicy.RETAIN` means CloudFormation left it behind when the logical ID changed. It still holds the old test accounts and the `auth-stage-v2.padi.com` custom domain, and it still bills for anything the feature plan charges. Delete it once nothing depends on it.
 - **Confirmation is browser-bound.** Between sign-up and confirmation an account has no `preferred_username`, so the opaque account id is the only identifier Cognito accepts for confirmation, and it lives in `localStorage`. A user who returns on another device can have the code [resent by name](#resend-by-username) but cannot finish confirming; they sign up again, and the chosen name is still free. Acceptable for a POC — a production flow should confirm by emailed link carrying the id, or auto-confirm via `PreSignUp` and verify email separately.
-- **No route has been exercised by a signed-in user.** The whole public surface is verified against the deployed API — `/public/health`, sign-up validation, confirm, resend, login, and both password routes all return the expected statuses, with CORS headers on real responses. `/me` and `/admin/users` correctly return `401` without a token, but nothing has been called *with* one: the pool has no users and nobody is in `padi-sso-admins`. Both authorization policies, the `IssuedForClient` requirement, and every `/me` and `/admin` Cognito call remain unproven.
+- **No route has been exercised by a signed-in user.** The open surface was verified against the deployed API while it still lived under `/public` — health, sign-up validation, confirm, resend, login, and both password routes all returned the expected statuses, with CORS headers on real responses. **The move to named routes at the API root has not been verified in AWS yet**; in particular, the base-path stripping it depends on can only be proven against the custom domain. `/me` and `/admin/users` correctly return `401` without a token, but nothing has been called *with* one: the pool has no users and nobody is in `padi-sso-admins`. Both authorization policies, the `IssuedForClient` requirement, and every `/me` and `/admin` Cognito call remain unproven.
 - **The API session never refreshes.** `session.ts` stores the refresh token but never exchanges it, so the session simply expires after `expiresIn` (one hour) and the user signs in again. Amplify's own refresh machinery is bypassed because the custom token provider returns stored tokens rather than a refreshable session. Implementing this means calling Cognito's `REFRESH_TOKEN_AUTH`, most cleanly as another API route.
-- **`/public/login` is unthrottled per caller and returns a refresh token to the browser.** Two things follow. Sign-in is the classic brute-force target and the only limit in front of it is the per-stage throttle, which one client can consume alone — it needs a WAF rate-based rule keyed on source IP, and a per-method throttle at minimum. And the refresh token is returned in the response body, matching what Amplify already does with tokens it obtains itself; a hardened deployment would put it in an `HttpOnly` cookie so script cannot read it, which also means the endpoint would need to move off a cross-origin call or gain credentialed CORS.
-- **No AWS WAF is attached yet, and `/public/signup` is now an unauthenticated write.** REST API was chosen specifically because it *can* carry WAF, but no web ACL is associated. Stage throttling (50 rps / 100 burst) is the only limit and it is per-stage, not per-caller — so one client can consume the whole budget. Sign-up is the endpoint that makes this urgent: each call creates a Cognito user *and* sends an email through the messaging service, so abuse costs money and sender reputation, not just capacity. Attach a web ACL with a rate-based rule, and consider a CAPTCHA before opening it to the internet.
+- **`/login` is unthrottled per caller and returns a refresh token to the browser.** Two things follow. Sign-in is the classic brute-force target and the only limit in front of it is the per-stage throttle, which one client can consume alone — it needs a WAF rate-based rule keyed on source IP, and a per-method throttle at minimum. And the refresh token is returned in the response body, matching what Amplify already does with tokens it obtains itself; a hardened deployment would put it in an `HttpOnly` cookie so script cannot read it, which also means the endpoint would need to move off a cross-origin call or gain credentialed CORS.
+- **No AWS WAF is attached yet, and `/signup` is now an unauthenticated write.** REST API was chosen specifically because it *can* carry WAF, but no web ACL is associated. Stage throttling (50 rps / 100 burst) is the only limit and it is per-stage, not per-caller — so one client can consume the whole budget. Sign-up is the endpoint that makes this urgent: each call creates a Cognito user *and* sends an email through the messaging service, so abuse costs money and sender reputation, not just capacity. Attach a web ACL with a rate-based rule, and consider a CAPTCHA before opening it to the internet.
 - **The Cognito SDK client is constructed with an explicit region.** In Lambda `AWS_REGION` is a real environment variable, but the local launch config passes `--AWS_REGION=us-west-2` as a *command-line argument* — which `IConfiguration` reads and the AWS SDK does not. Left to its own discovery the SDK picked a region from the profile and called a pool that doesn't exist there, surfacing as `ResourceNotFoundException: Username/client id combination not found` on every client-id-only call. `Program.cs` now passes `RegionEndpoint.GetBySystemName(settings.Region)` so both environments agree.
-- **Sign-up and sign-in need AWS credentials even locally.** `/public/signup` checks username availability with `ListUsers` before calling Cognito's unauthenticated `SignUp`, and `/public/login` uses `AdminInitiateAuth` throughout — so running the API locally without valid credentials fails both with a 500, `The security token included in the request is invalid`. In Lambda the execution role covers it. It also means an IAM problem blocks registration that would otherwise succeed, since `SignUp` itself needs no credentials; consider degrading to "skip the check" rather than failing closed.
+- **Sign-up and sign-in need AWS credentials even locally.** `/signup` checks username availability with `ListUsers` before calling Cognito's unauthenticated `SignUp`, and `/login` uses `AdminInitiateAuth` throughout — so running the API locally without valid credentials fails both with a 500, `The security token included in the request is invalid`. In Lambda the execution role covers it. It also means an IAM problem blocks registration that would otherwise succeed, since `SignUp` itself needs no credentials; consider degrading to "skip the check" rather than failing closed.
 - **A username can still be lost between sign-up and confirmation.** The availability check narrows the window but does not close it; two simultaneous sign-ups for the same name both succeed, and the second fails at confirmation with the account already created. Recovery today is to register again.
 - **The API shares a domain owned by another team.** `api.global-np.padi.com` is tagged `padi-api` / team `learning`, and `p/padi-auth-poc` is now mapped on it. A future base-path change must not collide with theirs — check with `aws apigatewayv2 get-api-mappings` first.
 - **Magic-link Function URLs are still `AuthType.NONE` and outside the gateway.** The API now provides the WAF-capable front door the README has wanted for them, but `/request-link` and `/verify` have not been moved behind it.

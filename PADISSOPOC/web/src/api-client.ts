@@ -1,23 +1,22 @@
 /**
  * Thin client for the PADISSO management API.
  *
- * VITE_API_BASE_URL is the **API root**, not the public prefix — route paths below add
- * their own `/public`, `/me` or `/admin` segment. With a base of
- * `https://api.global-np.padi.com/p/padi-auth-poc`, sign-up posts to
- * `https://api.global-np.padi.com/p/padi-auth-poc/public/signup`.
+ * VITE_API_BASE_URL is the **API root** — route paths below are appended to it. With a base
+ * of `https://api.global-np.padi.com/p/padi-auth-poc`, sign-up posts to
+ * `https://api.global-np.padi.com/p/padi-auth-poc/signup`.
  *
- * Only the `/public` routes are used so far; everything else in the app still talks to
- * Cognito directly through Amplify.
+ * Only the open (no-token) routes are used so far; everything else in the app still talks
+ * to Cognito directly through Amplify.
  */
 const BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
 
-// The public endpoints are usually quoted as ".../p/padi-auth-poc/public", so pasting that
-// whole string in here is the natural mistake — and it produces /public/public/signup,
-// which 404s with nothing to suggest why.
+// The open routes used to live under /public, so an older .env.local may still end in it.
+// That now produces /public/signup, which the gateway sends through the authorizer and
+// rejects with a 401 that says nothing about the real cause.
 if (BASE_URL.endsWith('/public')) {
   throw new Error(
-    'VITE_API_BASE_URL must be the API root, without the trailing /public — ' +
-      'route paths add it. Use https://api.global-np.padi.com/p/padi-auth-poc',
+    'VITE_API_BASE_URL must be the API root — the /public prefix no longer exists. ' +
+      'Use https://api.global-np.padi.com/p/padi-auth-poc',
   );
 }
 
@@ -75,7 +74,7 @@ export function isApiConfigured(): boolean {
 }
 
 export async function registerAccount(input: RegisterInput): Promise<RegistrationStarted> {
-  return post<RegistrationStarted>('/public/signup', input);
+  return post<RegistrationStarted>('/signup', input);
 }
 
 /**
@@ -83,16 +82,16 @@ export async function registerAccount(input: RegisterInput): Promise<Registratio
  * account exists but has never been confirmed.
  */
 export async function login(username: string, password: string): Promise<IssuedTokens> {
-  return post<IssuedTokens>('/public/login', { username, password });
+  return post<IssuedTokens>('/login', { username, password });
 }
 
 /** Resolves on success; throws ApiError with the API's message otherwise. */
 export async function confirmRegistration(accountId: string, code: string): Promise<void> {
-  await post<void>('/public/signup/confirm', { accountId, code });
+  await post<void>('/signup/confirm', { accountId, code });
 }
 
 export async function resendRegistrationCode(accountId: string): Promise<CodeResent> {
-  return post<CodeResent>('/public/signup/resend', { accountId });
+  return post<CodeResent>('/signup/resend', { accountId });
 }
 
 /**
@@ -101,12 +100,12 @@ export async function resendRegistrationCode(accountId: string): Promise<CodeRes
  * pending sign-up exists under the name, so success does not prove that one does.
  */
 export async function resendRegistrationCodeByUsername(username: string): Promise<CodeResent> {
-  return post<CodeResent>('/public/signup/resend-by-username', { username });
+  return post<CodeResent>('/signup/resend-by-username', { username });
 }
 
 /** Always succeeds for a well-formed request, whether or not the account exists. */
 export async function requestPasswordReset(username: string): Promise<PasswordResetStarted> {
-  return post<PasswordResetStarted>('/public/password/forgot', { username });
+  return post<PasswordResetStarted>('/password/forgot', { username });
 }
 
 export async function completePasswordReset(
@@ -114,7 +113,7 @@ export async function completePasswordReset(
   code: string,
   newPassword: string,
 ): Promise<void> {
-  await post<void>('/public/password/reset', { username, code, newPassword });
+  await post<void>('/password/reset', { username, code, newPassword });
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {

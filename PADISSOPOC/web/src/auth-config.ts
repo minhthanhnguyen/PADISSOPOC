@@ -26,7 +26,7 @@ Amplify.configure(
   {
     Auth: {
       // Sign-in happens two ways: Amplify's own SRP flow, and the management API's
-      // /public/login, which hands back tokens Amplify knows nothing about. Rather than run
+      // /login, which hands back tokens Amplify knows nothing about. Rather than run
       // two parallel sessions — which would leave the profile pages and passkeys working
       // only for SRP — this provider prefers the API's tokens when present and otherwise
       // defers to Amplify's own store. Downstream code stays unaware of the difference.

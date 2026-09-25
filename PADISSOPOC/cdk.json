@@ -32,7 +32,6 @@
       "http://localhost:5173",
       "https://account.global-np.padi.com"
     ],
-
     "apiName": "padi-sso-poc-api",
     "apiStageName": "v1",
     "apiDomainName": "api.global-np.padi.com",

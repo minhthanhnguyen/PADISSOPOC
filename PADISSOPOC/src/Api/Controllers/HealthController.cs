@@ -8,14 +8,12 @@ namespace Padi.Services.Authentication.Api.Controllers;
 /// Liveness only. Must never report anything useful to an unauthenticated caller — no pool
 /// ids, no dependency state.
 ///
-/// Lives under `/public` rather than at `/health` so it is matched by the same greedy
-/// `{proxy+}` gateway resource as every other public route. A dedicated non-greedy resource
-/// reached the Lambda with the custom domain's base path still on the front of the request
-/// path, and ASP.NET routing then found nothing — the endpoint 404'd in AWS while working
-/// locally.
+/// An open route: listed in the gateway's openRoutes in PadiSsoApiStack, which is what lets
+/// it skip the Cognito authorizer. Reachable at /health in AWS only because the API strips
+/// the custom domain's base path (API_BASE_PATH) — a named gateway resource forwards it.
 /// </summary>
 [ApiController]
-[Route("public/health")]
+[Route("health")]
 [AllowAnonymous]
 [Produces("application/json")]
 public sealed class HealthController : ControllerBase

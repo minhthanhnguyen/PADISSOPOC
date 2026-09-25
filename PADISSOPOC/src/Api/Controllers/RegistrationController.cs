@@ -10,10 +10,11 @@ namespace Padi.Services.Authentication.Api.Controllers;
 /// Self-service registration, reachable without a token — a user cannot have one before
 /// their account exists.
 ///
-/// The <c>/public</c> prefix is not decoration. API Gateway maps it as its own resource with
-/// no authorizer, while everything else sits behind the Cognito authorizer, so the
-/// unauthenticated surface is exactly the routes under this prefix and can be reviewed by
-/// looking at one place. Do not add a route here that acts on an existing account.
+/// Open routes. The unauthenticated surface is declared in one place — openRoutes in
+/// PadiSsoApiStack — which lists each route and method that skips the Cognito authorizer.
+/// A new action here is <i>not</i> reachable anonymously until it is added there: until then
+/// the gateway sends it through the authorizer and answers 401. Do not add a route here
+/// that acts on an existing account.
 ///
 /// Every action calls Cognito's own unauthenticated operations with the app client id. Two
 /// lookups use the service's IAM role (ListUsers) instead: the username availability check
@@ -22,7 +23,7 @@ namespace Padi.Services.Authentication.Api.Controllers;
 /// its only effect is a code sent to that account's own address.
 /// </summary>
 [ApiController]
-[Route("public")]
+[Route("signup")]
 [AllowAnonymous]
 [Produces("application/json")]
 public sealed class RegistrationController(
@@ -31,7 +32,7 @@ public sealed class RegistrationController(
     IUserRegistration registration,
     PoolContext pool) : ControllerBase
 {
-    [HttpPost("signup")]
+    [HttpPost]
     [ProducesResponseType(typeof(RegistrationStartedResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
@@ -57,7 +58,7 @@ public sealed class RegistrationController(
             new RegistrationStartedResponse(result.AccountId, result.Confirmed, result.CodeDestination));
     }
 
-    [HttpPost("signup/confirm")]
+    [HttpPost("confirm")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -69,7 +70,7 @@ public sealed class RegistrationController(
         return NoContent();
     }
 
-    [HttpPost("signup/resend")]
+    [HttpPost("resend")]
     [ProducesResponseType(typeof(CodeResentResponse), StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -85,7 +86,7 @@ public sealed class RegistrationController(
     /// whether or not a pending sign-up exists under the name — never 404 — so it cannot be
     /// used to discover which names have one.
     /// </summary>
-    [HttpPost("signup/resend-by-username")]
+    [HttpPost("resend-by-username")]
     [ProducesResponseType(typeof(CodeResentResponse), StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<ActionResult<CodeResentResponse>> ResendByUsername(
