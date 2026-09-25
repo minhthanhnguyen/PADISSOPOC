@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Padi.Services.Authentication.Application.Abstractions;
 using Padi.Services.Authentication.Domain.Cognito;
 
@@ -102,16 +103,34 @@ public sealed class SendCognitoMessage(
             ["META_COUNTRY_CODE"] = "US",
         };
 
-        // Client-supplied metadata is applied last so a caller can override presentation
-        // values (locale, brand) without a code change.
+        // Client metadata comes from whoever called Cognito, and several code-sending
+        // operations (ForgotPassword among them) need nothing but the public client id — so
+        // it is untrusted input, not a trusted override. Copied wholesale, it could replace
+        // the verification code, the recipient fields or any template value in an email to
+        // someone else, and it would forward internal keys such as admin_proof to the
+        // messaging service. Only allowlisted keys with well-formed values are used.
         if (command.ClientMetadata is not null)
         {
             foreach (var (key, value) in command.ClientMetadata)
             {
-                attributes[key] = value;
+                if (AllowedMetadata.TryGetValue(key, out var shape) && value is not null && shape.IsMatch(value))
+                {
+                    attributes[key] = value;
+                }
             }
         }
 
         return attributes;
     }
+
+    /// <summary>
+    /// Caller-supplied keys that may influence a message, each with the exact shape its value
+    /// must have. Presentation only — never the code, a recipient field or free text that a
+    /// template would render. Add a key here only with a pattern that bounds its value.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, Regex> AllowedMetadata = new Dictionary<string, Regex>
+    {
+        // BCP 47 language tag, e.g. "en", "fr-FR", "zh-Hant-TW".
+        ["LanguageCode"] = new(@"^[A-Za-z]{2,3}(-[A-Za-z]{4})?(-[A-Za-z]{2}|-\d{3})?$", RegexOptions.CultureInvariant),
+    };
 }

@@ -105,10 +105,10 @@ public sealed class Program
         builder.Services.AddAuthorizationBuilder()
             .AddPolicy(Policies.Caller, policy => policy
                 .RequireAuthenticatedUser()
-                .AddRequirements(new IssuedForClient(settings.ClientId)))
+                .AddRequirements(new IssuedForClient(settings.TokenClientIds)))
             .AddPolicy(Policies.Administrator, policy => policy
                 .RequireAuthenticatedUser()
-                .AddRequirements(new IssuedForClient(settings.ClientId))
+                .AddRequirements(new IssuedForClient(settings.TokenClientIds))
                 .RequireAssertion(context => context.User.IsInCognitoGroup(settings.AdminGroup)));
 
         builder.Services.AddSingleton<IAuthorizationHandler, IssuedForClientHandler>();

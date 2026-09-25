@@ -57,14 +57,14 @@ Infrastructure is split per concern rather than into one project, so each Lambda
 |---|---|---|
 | DefineAuthChallenge | Application | 249 KB |
 | CreateAuthChallenge | Application | 245 KB |
-| VerifyAuthChallenge | Application | 245 KB |
+| VerifyAuthChallenge | Application + Secrets Manager, SSM SDKs | 5.9 MB |
 | PostAuthentication | + Core, Cognito | 5.0 MB |
 | PostConfirmation | + Core, Cognito | 5.0 MB |
-| VerifyMagicLink | + Core, Cognito, DynamoDb | 7.5 MB |
+| VerifyMagicLink | + Core, Cognito, DynamoDb + Secrets Manager SDK | 8.0 MB |
 | RequestMagicLink | + Core, Cognito, DynamoDb, Notifications | 9.4 MB |
 | CustomEmailSender | + Core, Configuration, Messaging, Kms | 30 MB |
 
-The three custom-auth triggers reference **Application only** — no AWS SDKs — so they stay small by construction rather than by discipline. Two boundaries exist specifically to protect this:
+Define and Create reference **Application only**, so they stay small by construction rather than by discipline. `VerifyAuthChallenge` used to as well; it now carries the Secrets Manager and Systems Manager SDKs to read the admin proof and the magic-link client id at runtime rather than from environment variables — see [Magic-link flow](#magic-link-flow). Two boundaries exist specifically to keep the rest small:
 
 - **`Core` versus `Configuration`.** `Core` holds the clock, audit log and environment-variable configuration with no AWS packages; `Configuration` adds SSM Parameter Store. Only `CustomEmailSender` reads parameters, so only it ships `AWSSDK.SimpleSystemsManagement` — one bundle out of eight, worth roughly 4 MB to each of the others.
 - **`PostAuthentication` and `PostConfirmation` reference `Infrastructure.Cognito` alone**, never a broader bundle, keeping DynamoDB, SES and SNS out of two functions that only write a user attribute.
@@ -126,7 +126,19 @@ Constraints when adding:
 - Always optional — *"you can't require that users provide a value"*
 - Always a **string in the ID token**, whatever data type is declared
 
-The app client declares neither `ReadAttributes` nor `WriteAttributes`, so it defaults to all of them and a newly added attribute is readable and writable without a client change. Worth confirming on first use, since the docs also say new custom attributes need permissions set — the two statements sit awkwardly together and only a live check settles it.
+#### Who may write which attribute
+
+**Users can write only what describes them, never what identifies them to other systems.** Both app clients carry an explicit `WriteAttributes` list:
+
+| Client-writable (a user, with their own token) | Server-only (admin routes and triggers, via IAM) |
+|---|---|
+| `given_name`, `middle_name`, `family_name`, `birthdate`, `email`, `phone_number`, `preferred_username`, `custom:signup_username` | `custom:padi_id`, `custom:affiliate_id`, `custom:affiliate_type_id`, `custom:delegate`, `custom:guardian_email`, `custom:source_client_id`, `custom:last_login` |
+
+Without the list a client may write every mutable attribute, and it used to: any signed-in user could call Cognito's `UpdateUserAttributes` directly and set `custom:padi_id` or `custom:affiliate_id` to someone else's value, which then rode along in their ID token. The same limit applies to `SignUp`, so a direct sign-up can no longer seed those attributes either.
+
+`custom:signup_username` stays client-writable because the API's own sign-up calls `SignUp` through the public client, and `SignUp` can set only attributes that client may write. It only matters before confirmation, when the account has no token that could change it.
+
+The API's admin routes, `PostAuthentication` and `PostConfirmation` use `AdminUpdateUserAttributes` under IAM, which client permissions don't apply to — so they can still write everything. **A new custom attribute is server-only by default**; add it to `userWritableAttributes` in the stack only if users should set it themselves. Reading is unrestricted.
 
 #### Name and date-of-birth attributes
 
@@ -139,7 +151,7 @@ First name, middle initial, last name and date of birth are all **optional and m
 | Last name | `family_name` | Already configured optional + mutable |
 | Date of birth | `birthdate` | Already configured optional + mutable |
 
-**`middle_name` is deliberately absent from `StandardAttributes`.** Every Cognito pool already carries the full OIDC standard attribute set, and *"except for `sub`, standard attributes are optional by default"* — so `middle_name` is already optional and mutable without being declared. Adding a redundant entry would change the pool's `Schema`, which `UpdateUserPool` cannot apply to a live pool, risking a failed deploy for no functional gain. The app client sets no `WriteAttributes` restriction, so it can already read and write it.
+**`middle_name` is deliberately absent from `StandardAttributes`.** Every Cognito pool already carries the full OIDC standard attribute set, and *"except for `sub`, standard attributes are optional by default"* — so `middle_name` is already optional and mutable without being declared. Adding a redundant entry would change the pool's `Schema`, which `UpdateUserPool` cannot apply to a live pool, risking a failed deploy for no functional gain. It is on both app clients' `WriteAttributes` list, so users can set it themselves.
 
 There is no Cognito attribute for an *initial*, so the single character is stored in `middle_name` and constrained to length 1 by the API and the sign-up form. Relaxing that to a full middle name is a contract change only — no pool work.
 
@@ -220,12 +232,21 @@ POST /request-link   { "username": "alice", "channel": "email" | "sms" }
 POST /verify-link    { "token": "…" }
   ├─ DynamoDB conditional delete by tokenHash   ← atomic single-use
   ├─ TTL check
-  ├─ AdminInitiateAuth (CUSTOM_AUTH) + AdminRespondToAuthChallenge
-  │     └─ Define → Create (no-op) → Verify (constant-time ADMIN_PROOF check)
+  ├─ AdminInitiateAuth (CUSTOM_AUTH, magic-link client + SECRET_HASH)
+  │     + AdminRespondToAuthChallenge
+  │     └─ Define → Create (no-op) → Verify (right client? + constant-time ADMIN_PROOF check)
   └─ 200 { idToken, accessToken, refreshToken, expiresIn, tokenType }
 ```
 
-`ADMIN_PROOF` is a 64-character secret generated at deploy time and shared only between `VerifyMagicLink` and the `VerifyAuthChallenge` trigger. It proves the challenge originated from the one Lambda holding `AdminInitiateAuth` permission — the actual authentication decision already happened against DynamoDB before the Cognito challenge begins.
+The actual authentication decision happens against DynamoDB before the Cognito challenge begins. The challenge exists only because Cognito needs one to issue tokens, so what matters is that **nobody else can run it**. Three things ensure that:
+
+- **Custom auth exists only on a server-only app client** (`padisso-magic-link-server`) that has a client secret and no OAuth. The public browser client no longer allows it. That mattered: the public client id is public, and while it allowed custom auth anyone could start the challenge for any username with no AWS credentials at all — leaving the admin proof as the only barrier.
+- **The `VerifyAuthChallenge` trigger checks `callerContext.clientId`** against that client, so the challenge fails even if the public client is ever reconfigured.
+- **`ADMIN_PROOF`**, a 64-character secret generated at deploy time, must match in both the client metadata and the answer. It lives only in Secrets Manager, and both `VerifyMagicLink` and the trigger read it at cold start. It used to sit in their environment variables, where `lambda:GetFunctionConfiguration` — part of broad read-only roles — returned it in plain text, and anyone who read it could sign in as any user.
+
+`VerifyMagicLink` also reads the client secret at cold start, with `DescribeUserPoolClient`, to compute `SECRET_HASH`. The trigger can't be given the client id as an environment variable: it is one of the pool's triggers, so referencing a client of the same pool would make the pool depend on itself. The stack publishes the id to the Parameter Store entry `/padi-sso-poc/magic-link/client-id` instead, and the trigger reads it by that fixed name.
+
+**Magic-link tokens are issued for the magic-link client**, not the public one. The API accepts both clients' tokens (`MAGIC_LINK_CLIENT_ID`), but the browser can't refresh them itself, because refreshing on that client needs its secret.
 
 **Security properties:** 256-bit tokens, only SHA-256 hashes persisted, constant-time comparison, single-use enforced by conditional delete, 15-minute TTL.
 
@@ -474,7 +495,7 @@ Attributes sent on every message:
 | `FirstName` | `given_name` |
 | `META_COUNTRY_CODE` | Currently hardcoded `US` |
 
-Anything in `ClientMetadata` is merged in afterwards and **overwrites** a colliding key, so a client can vary template behaviour — locale, brand, campaign — without a code change. Cognito forwards `ClientMetadata` for the `SignUp`, `ForgotPassword` and `Authentication` trigger sources only.
+**`ClientMetadata` is untrusted and only `LanguageCode` passes through**, and only as a well-formed language tag such as `fr-FR`. Every other key is dropped. Cognito forwards `ClientMetadata` for the `SignUp`, `ForgotPassword` and `Authentication` trigger sources, and those calls come from whoever calls Cognito — `ForgotPassword` needs nothing but the public client id. Metadata used to be merged in last and overwrote colliding keys. So a stranger could request a reset for someone else's account and replace `VerificationCode`, `EmailAddress`, `SubscriberKey` or `FirstName` in the email that account received. Internal keys such as `admin_proof` were also forwarded to the messaging service. To let callers vary something else, add the key to `AllowedMetadata` in `SendCognitoMessage` with a pattern that bounds its value — never a recipient field, the code, or free text a template renders.
 
 `ContactKey` is the email address. Note that this makes the contact identity change if a user updates their email; Cognito's `sub` would be stable across that, if the messaging service can key on it.
 
@@ -897,7 +918,6 @@ This is a proof of concept. Before production:
 - **There are no automated tests.** The clean-architecture split makes the use cases testable with fakes; nothing has been written yet.
 - **`CustomSMSSender` is not wired.** SMS OTP still uses Cognito's own delivery. `MessagingEmailSender` already implements `ISmsSender`; attaching the trigger later is a `LambdaConfig` update-in-place, no pool replacement.
 - **Function URLs use `AuthType.NONE`** — publicly reachable with no rate limiting on `/request-link`; put them behind API Gateway with WAF
-- **`ADMIN_PROOF` is stored in plain Lambda environment variables**, readable via `GetFunctionConfiguration`. The messaging credentials already avoid this by loading from Parameter Store at runtime — `ADMIN_PROOF` should move to the same mechanism.
 - **`ses:SendEmail` and `sns:Publish` are granted on `*`** and should be scoped
 - **No account linking** — a user who registers with a password and later signs in with the same email via a social provider receives a second, separate account. Consider `AdminLinkProviderForUser` from a PreSignUp trigger.
 - **SMS is untested** — requires exiting the SNS SMS sandbox and, for US traffic, 10DLC or toll-free registration

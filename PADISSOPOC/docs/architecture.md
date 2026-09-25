@@ -45,7 +45,7 @@ flowchart LR
 
         DDB[("DynamoDB<br/>padi-sso-poc-magic-links<br/>single-use, TTL")]
         KMS["KMS key<br/>alias/padi-sso-poc-cognito-codes"]
-        SSM["SSM Parameter Store<br/>/padi/services/authentication"]
+        SSM["SSM Parameter Store<br/>/padi/services/authentication<br/>/padi-sso-poc/magic-link/client-id"]
         SM["Secrets Manager<br/>ADMIN_PROOF · IdP secrets"]
         SES["SES"]
         SNS["SNS"]
@@ -89,11 +89,12 @@ flowchart LR
     REQ -->|email| SES
     REQ -.->|"sms (wired, unused)"| SNS
     VER -->|"conditional delete (single use)"| DDB
-    VER -->|"AdminInitiateAuth CUSTOM_AUTH"| POOL
+    VER -->|"AdminInitiateAuth CUSTOM_AUTH<br/>server-only client + SECRET_HASH"| POOL
 
     EMAILSENDER -.->|"API + token URLs / client id / secret / templates"| SSM
-    REQ -.-> SM
-    VER -.-> SM
+    VER -.->|"ADMIN_PROOF at cold start"| SM
+    VERIFYC -.->|"ADMIN_PROOF at cold start"| SM
+    VERIFYC -.->|"expected client id"| SSM
 ```
 
 Dashed edges are configuration or not-yet-active paths. `CustomSMSSender` exists in code
@@ -234,14 +235,16 @@ only the AWS SDKs it uses. The published bundle sizes show what that buys:
 |---|---|---|
 | `DefineAuthChallengeLambda` | `Application` only | 249 KB |
 | `CreateAuthChallengeLambda` | `Application` only | 245 KB |
-| `VerifyAuthChallengeLambda` | `Application` only | 245 KB |
+| `VerifyAuthChallengeLambda` | `Application` + Secrets Manager and SSM SDKs | 5.9 MB |
 | `PostAuthenticationLambda` | `+ Cognito`, `Core` | 5.0 MB |
 | `PostConfirmationLambda` | `+ Cognito`, `Core` | 5.0 MB |
-| `VerifyMagicLinkLambda` | `+ DynamoDb` | 7.5 MB |
+| `VerifyMagicLinkLambda` | `+ DynamoDb`, Secrets Manager SDK | 8.0 MB |
 | `RequestMagicLinkLambda` | `+ Notifications` | 9.4 MB |
 | `CustomEmailSenderLambda` | `+ Configuration`, `Kms`, `Messaging` | 30 MB |
 
-The three challenge triggers carry no AWS SDK at all. `Configuration` is separate from
+Define and Create carry no AWS SDK at all. Verify used to be the same size; it now reads the
+admin proof and the magic-link client id at runtime instead of from environment variables,
+which costs it two SDKs — see section 4. `Configuration` is separate from
 `Core` precisely so the Systems Manager SDK reaches only `CustomEmailSenderLambda` — one bundle
 out of eight. Collapsing infrastructure into a single project would push every function
 toward that 30 MB.
@@ -275,15 +278,23 @@ sequenceDiagram
     V->>D: conditional delete on hash, ReturnValue = ALL_OLD
     Note over V: delete-then-validate makes<br/>the token single-use atomically
     V->>V: reject if absent or expired
-    V->>C: AdminInitiateAuth CUSTOM_AUTH + ADMIN_PROOF
-    C->>C: Define → Create → Verify challenge Lambdas
+    V->>C: AdminInitiateAuth CUSTOM_AUTH on the server-only client<br/>+ SECRET_HASH + ADMIN_PROOF
+    C->>C: Define → Create → Verify challenge Lambdas<br/>(Verify checks caller client and proof)
     C-->>V: id / access / refresh tokens
     V-->>U: tokens
 ```
 
 The three challenge Lambdas exist only to satisfy Cognito's custom-auth contract; the real
-check already happened in `VerifyMagicLink`. `ADMIN_PROOF` is the shared secret that lets
-them distinguish a server-initiated flow from a client-initiated one.
+check already happened in `VerifyMagicLink`. What they must guarantee is that nobody else can
+complete the challenge. A trigger cannot tell whether a flow was admin-initiated, so
+`ADMIN_PROOF` alone never distinguished a server-initiated flow from a client-initiated one.
+While the public browser client allowed custom auth, anyone who learned the proof could sign
+in as any user. Now:
+
+- custom auth exists only on a **server-only client with a secret**, so its id alone is useless;
+- Verify rejects any exchange whose `callerContext.clientId` is not that client;
+- `ADMIN_PROOF` and the client secret are read at cold start from Secrets Manager and Cognito,
+  never from environment variables.
 
 Storing the immutable username rather than the caller's input matters now that usernames are
 mutable: a user who changes their name between requesting a link and clicking it would

@@ -18,6 +18,9 @@ namespace Padi.Services.Authentication
         public IUserPool UserPool { get; set; }
 
         public IUserPoolClient UserPoolClient { get; set; }
+
+        /// <summary>Tokens from a magic-link sign-in are issued for this client, not the public one.</summary>
+        public IUserPoolClient MagicLinkClient { get; set; }
     }
 
     /// <summary>
@@ -85,6 +88,9 @@ namespace Padi.Services.Authentication
                 {
                     ["USER_POOL_ID"] = props.UserPool.UserPoolId,
                     ["USER_POOL_CLIENT_ID"] = props.UserPoolClient.UserPoolClientId,
+                    // A second client whose tokens the API accepts. Not a credential — just
+                    // an id the token's client_id claim is compared against.
+                    ["MAGIC_LINK_CLIENT_ID"] = props.MagicLinkClient.UserPoolClientId,
                     ["ADMIN_GROUP"] = adminGroup,
                     // The gateway's CORS config only answers preflight; the app has to put
                     // the header on the real response, so it needs the same origin list.

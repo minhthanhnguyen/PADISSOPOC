@@ -20,9 +20,9 @@ public static class Policies
 /// standard audience check does not apply. Without this, a token minted by any other app
 /// client on the same pool would be accepted.
 /// </summary>
-public sealed class IssuedForClient(string clientId) : IAuthorizationRequirement
+public sealed class IssuedForClient(IReadOnlyCollection<string> clientIds) : IAuthorizationRequirement
 {
-    public string ClientId { get; } = clientId;
+    public IReadOnlyCollection<string> ClientIds { get; } = clientIds;
 }
 
 public sealed class IssuedForClientHandler : AuthorizationHandler<IssuedForClient>
@@ -33,7 +33,7 @@ public sealed class IssuedForClientHandler : AuthorizationHandler<IssuedForClien
         var clientId = context.User.FindFirst("client_id")?.Value
                        ?? context.User.FindFirst("aud")?.Value;
 
-        if (string.Equals(clientId, requirement.ClientId, StringComparison.Ordinal))
+        if (clientId is not null && requirement.ClientIds.Contains(clientId, StringComparer.Ordinal))
         {
             context.Succeed(requirement);
         }

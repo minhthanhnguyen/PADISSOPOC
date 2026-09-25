@@ -8,6 +8,7 @@ using Amazon.CDK.AWS.IAM;
 using Amazon.CDK.AWS.KMS;
 using Amazon.CDK.AWS.Lambda;
 using Amazon.CDK.AWS.SecretsManager;
+using Amazon.CDK.AWS.SSM;
 using Constructs;
 
 namespace Padi.Services.Authentication
@@ -16,6 +17,8 @@ namespace Padi.Services.Authentication
     {
         public UserPool UserPool { get; }
         public UserPoolClient UserPoolClient { get; }
+        /// <summary>Server-only client for the magic-link custom-auth flow. Never given to a browser.</summary>
+        public UserPoolClient MagicLinkClient { get; }
         public UserPoolDomain UserPoolDomain { get; }  // null while customDomainEnabled is false
         public UserPoolDomain PrefixDomain { get; }    // null while cognitoDomainPrefix is unset
 
@@ -88,7 +91,8 @@ namespace Padi.Services.Authentication
                 RemovalPolicy = RemovalPolicy.DESTROY,
             });
 
-            // Shared secret between VerifyMagicLinkFn and the Cognito Verify trigger
+            // Shared secret between VerifyMagicLinkFn and the Cognito Verify trigger. Both read
+            // it at runtime; it is never placed in an environment variable.
             var adminProofSecret = new Secret(this, "MagicLinkAdminProof", new SecretProps
             {
                 SecretName = "padisso-poc/magic-link/admin-proof",
@@ -230,6 +234,16 @@ namespace Padi.Services.Authentication
                 MemorySize = 256,
             });
 
+            // Where the magic-link client's id is published for the Verify trigger. A fixed
+            // name rather than a reference, because the trigger belongs to the same pool as
+            // that client: referencing the client from the trigger would make the pool depend
+            // on itself. Outside /padi/services/authentication so CustomEmailSender, which
+            // loads that whole path into its configuration, does not pick it up.
+            const string magicLinkClientIdParameter = "/padi-sso-poc/magic-link/client-id";
+
+            // Holds no secrets in its environment — only where to find them. The admin proof
+            // and the expected client id are read at runtime; environment variables are
+            // returned in plain text by lambda:GetFunctionConfiguration.
             var verifyFn = new Function(this, "VerifyAuthChallengeFn", new FunctionProps
             {
                 FunctionName = "padi-sso-poc-verify-auth",
@@ -240,9 +254,26 @@ namespace Padi.Services.Authentication
                 MemorySize = 256,
                 Environment = new Dictionary<string, string>
                 {
-                    ["ADMIN_PROOF"] = adminProofSecret.SecretValue.UnsafeUnwrap(),
+                    ["ADMIN_PROOF_SECRET_ID"] = adminProofSecret.SecretArn,
+                    ["MAGIC_LINK_CLIENT_ID_PARAMETER"] = magicLinkClientIdParameter,
                 },
             });
+            adminProofSecret.GrantRead(verifyFn);
+            // Built from the name, not from the parameter resource: that resource depends on
+            // the client, and a reference to it here would close the same cycle.
+            verifyFn.AddToRolePolicy(new PolicyStatement(new PolicyStatementProps
+            {
+                Actions = new[] { "ssm:GetParameter" },
+                Resources = new[]
+                {
+                    FormatArn(new ArnComponents
+                    {
+                        Service = "ssm",
+                        Resource = "parameter",
+                        ResourceName = magicLinkClientIdParameter.TrimStart('/'),
+                    }),
+                },
+            }));
 
             // Construct ID is deliberately versioned. Sign-in alias configuration is fixed
             // at pool creation — Cognito's UpdateUserPool cannot change it — so adding
@@ -488,6 +519,30 @@ namespace Padi.Services.Authentication
                 });
             }
 
+            // What a user may write about themselves, directly against Cognito with their own
+            // token. Without this, a client can write every mutable attribute — including the
+            // custom ones that identify a person to other PADI systems. A user could then set
+            // custom:padi_id or custom:affiliate_id to someone else's value and carry it in
+            // their ID token. Those are now written only by the API's admin routes and the
+            // triggers, which use IAM and are not bound by client permissions.
+            //
+            // custom:signup_username stays writable because the API's own sign-up calls
+            // Cognito's SignUp through the public client, and SignUp can only set attributes
+            // that client may write. The value only matters before confirmation, when the
+            // account has no token anyone could use to change it.
+            var userWritableAttributes = new ClientAttributes()
+                .WithStandardAttributes(new StandardAttributesMask
+                {
+                    GivenName = true,
+                    MiddleName = true,
+                    FamilyName = true,
+                    Birthdate = true,
+                    Email = true,
+                    PhoneNumber = true,
+                    PreferredUsername = true,
+                })
+                .WithCustomAttributes("signup_username");
+
             UserPoolClient = UserPool.AddClient("PadissoAppClient", new UserPoolClientOptions
             {
                 UserPoolClientName = "padisso-app-client",
@@ -502,8 +557,13 @@ namespace Padi.Services.Authentication
                     // credentials, so only the API's execution role can use it.
                     AdminUserPassword = true,
                     User = true,
-                    Custom = true,
+                    // Custom auth is off here and lives only on the magic-link client below.
+                    // This client's id is public, so custom auth on it let anyone start the
+                    // magic-link challenge without AWS credentials — and with the admin
+                    // proof, sign in as any user.
+                    Custom = false,
                 },
+                WriteAttributes = userWritableAttributes,
                 GenerateSecret = false,
                 PreventUserExistenceErrors = true,
                 AccessTokenValidity = Duration.Hours(1),
@@ -525,19 +585,39 @@ namespace Padi.Services.Authentication
                 UserPoolClient.Node.AddDependency(idp);
             }
 
-            // ─── Magic-link Function URL endpoints (server-side flow) ───
-            var magicLinkEnv = new Dictionary<string, string>
+            // Server-only client for the magic-link flow, and the only client with custom
+            // auth. Its secret means Cognito rejects any call on it — public or admin — that
+            // lacks a SECRET_HASH, so its id alone is useless. VerifyMagicLink reads the secret
+            // from Cognito at cold start; it never appears in configuration.
+            MagicLinkClient = UserPool.AddClient("PadissoMagicLinkClient", new UserPoolClientOptions
             {
-                ["MAGIC_LINK_TABLE"]      = magicLinkTable.TableName,
-                ["MAGIC_LINK_BASE_URL"]   = magicLinkBaseUrl,
-                ["MAGIC_LINK_EMAIL_FROM"] = magicLinkEmailFrom,
-                ["MAGIC_LINK_SMS_SENDER_ID"] = magicLinkSmsSenderId ?? "",
-                ["MAGIC_LINK_TTL_MIN"]    = "15",
-                ["USER_POOL_ID"]          = UserPool.UserPoolId,
-                ["CLIENT_ID"]             = UserPoolClient.UserPoolClientId,
-                ["ADMIN_PROOF"]           = adminProofSecret.SecretValue.UnsafeUnwrap(),
-            };
+                UserPoolClientName = "padisso-magic-link-server",
+                AuthFlows = new AuthFlow { Custom = true },
+                GenerateSecret = true,
+                PreventUserExistenceErrors = true,
+                // Tokens from a magic-link sign-in go to the browser, which can present them
+                // to Cognito directly — so this client gets the same write limits.
+                WriteAttributes = userWritableAttributes,
+                AccessTokenValidity = Duration.Hours(1),
+                IdTokenValidity = Duration.Hours(1),
+                RefreshTokenValidity = Duration.Days(30),
+                SupportedIdentityProviders = new[] { UserPoolClientIdentityProvider.COGNITO },
+                // No hosted pages, redirects or OAuth grants: it only backs AdminInitiateAuth.
+                DisableOAuth = true,
+            });
 
+            // Read by the Verify trigger, which cannot take the id as an environment variable
+            // — see magicLinkClientIdParameter above.
+            new StringParameter(this, "MagicLinkClientIdParameter", new StringParameterProps
+            {
+                ParameterName = magicLinkClientIdParameter,
+                StringValue = MagicLinkClient.UserPoolClientId,
+                Description = "Magic-link app client id, checked by the VerifyAuthChallenge trigger",
+            });
+
+            // ─── Magic-link Function URL endpoints (server-side flow) ───
+            // Split per function: the request side needs no client and no proof, so it is
+            // given neither.
             var requestMagicLinkFn = new Function(this, "RequestMagicLinkFn", new FunctionProps
             {
                 FunctionName = "padi-sso-poc-request-magic-link",
@@ -546,9 +626,18 @@ namespace Padi.Services.Authentication
                 Code = LambdaCode("RequestMagicLinkLambda"),
                 Timeout = Duration.Seconds(30),
                 MemorySize = 512,
-                Environment = magicLinkEnv,
+                Environment = new Dictionary<string, string>
+                {
+                    ["MAGIC_LINK_TABLE"]         = magicLinkTable.TableName,
+                    ["MAGIC_LINK_BASE_URL"]      = magicLinkBaseUrl,
+                    ["MAGIC_LINK_EMAIL_FROM"]    = magicLinkEmailFrom,
+                    ["MAGIC_LINK_SMS_SENDER_ID"] = magicLinkSmsSenderId ?? "",
+                    ["MAGIC_LINK_TTL_MIN"]       = "15",
+                    ["USER_POOL_ID"]             = UserPool.UserPoolId,
+                },
             });
 
+            // Pointers only. The client secret and the admin proof are fetched at cold start.
             var verifyMagicLinkFn = new Function(this, "VerifyMagicLinkFn", new FunctionProps
             {
                 FunctionName = "padi-sso-poc-verify-magic-link",
@@ -557,8 +646,15 @@ namespace Padi.Services.Authentication
                 Code = LambdaCode("VerifyMagicLinkLambda"),
                 Timeout = Duration.Seconds(30),
                 MemorySize = 512,
-                Environment = magicLinkEnv,
+                Environment = new Dictionary<string, string>
+                {
+                    ["MAGIC_LINK_TABLE"]      = magicLinkTable.TableName,
+                    ["USER_POOL_ID"]          = UserPool.UserPoolId,
+                    ["MAGIC_LINK_CLIENT_ID"]  = MagicLinkClient.UserPoolClientId,
+                    ["ADMIN_PROOF_SECRET_ID"] = adminProofSecret.SecretArn,
+                },
             });
+            adminProofSecret.GrantRead(verifyMagicLinkFn);
 
             magicLinkTable.GrantReadWriteData(requestMagicLinkFn);
             magicLinkTable.GrantReadWriteData(verifyMagicLinkFn);
@@ -586,6 +682,8 @@ namespace Padi.Services.Authentication
                 {
                     "cognito-idp:AdminInitiateAuth",
                     "cognito-idp:AdminRespondToAuthChallenge",
+                    // To read the magic-link client's secret at cold start.
+                    "cognito-idp:DescribeUserPoolClient",
                 },
                 Resources = new[] { UserPool.UserPoolArn },
             }));

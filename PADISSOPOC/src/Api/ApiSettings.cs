@@ -13,8 +13,8 @@ public sealed class ApiSettings
     private const string DefaultAdminGroup = "padi-sso-admins";
 
     private ApiSettings(
-        string region, string userPoolId, string clientId, string adminGroup, string[] allowedOrigins,
-        string? basePath)
+        string region, string userPoolId, string clientId, string? magicLinkClientId, string adminGroup,
+        string[] allowedOrigins, string? basePath)
     {
         Region = region;
         UserPoolId = userPoolId;
@@ -22,13 +22,22 @@ public sealed class ApiSettings
         AdminGroup = adminGroup;
         AllowedOrigins = allowedOrigins;
         BasePath = basePath;
+        TokenClientIds = magicLinkClientId is null ? [clientId] : [clientId, magicLinkClientId];
     }
 
     public string Region { get; }
 
     public string UserPoolId { get; }
 
+    /// <summary>The public client the API calls Cognito through for sign-up, sign-in and reset.</summary>
     public string ClientId { get; }
+
+    /// <summary>
+    /// Clients whose access tokens the API accepts: the public client, plus the server-only
+    /// magic-link client when configured, since a magic-link sign-in issues tokens for that
+    /// one. Every other client on the pool is rejected.
+    /// </summary>
+    public IReadOnlyList<string> TokenClientIds { get; }
 
     public string AdminGroup { get; }
 
@@ -57,6 +66,9 @@ public sealed class ApiSettings
         region: configuration["AWS_REGION"] ?? DefaultRegion,
         userPoolId: configuration.Require("USER_POOL_ID"),
         clientId: configuration.Require("USER_POOL_CLIENT_ID"),
+        magicLinkClientId: string.IsNullOrWhiteSpace(configuration["MAGIC_LINK_CLIENT_ID"])
+            ? null
+            : configuration["MAGIC_LINK_CLIENT_ID"]!.Trim(),
         adminGroup: configuration["ADMIN_GROUP"] ?? DefaultAdminGroup,
         allowedOrigins: (configuration["ALLOWED_ORIGINS"] ?? "")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),

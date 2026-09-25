@@ -46,6 +46,7 @@ namespace Padi.Services.Authentication
             {
                 UserPool = pool.UserPool,
                 UserPoolClient = pool.UserPoolClient,
+                MagicLinkClient = pool.MagicLinkClient,
             });
 
             app.Synth();

@@ -12,6 +12,10 @@
   <ItemGroup>
     <PackageReference Include="Amazon.Lambda.Core" Version="3.3.0" />
     <PackageReference Include="Amazon.Lambda.Serialization.SystemTextJson" Version="3.0.0" />
+    <!-- Reads the admin proof and the magic-link client id at runtime, so neither sits in
+         an environment variable. The only challenge trigger that needs an AWS SDK. -->
+    <PackageReference Include="AWSSDK.SecretsManager" Version="4.0.4.6" />
+    <PackageReference Include="AWSSDK.SimpleSystemsManagement" Version="4.0.103.3" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\Application\Application.csproj" />
