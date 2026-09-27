@@ -102,4 +102,19 @@ public sealed record LoginResponse(
     string? AccessToken,
     string? RefreshToken,
     int ExpiresIn,
-    string? TokenType);
+    string? TokenType)
+{
+    public static LoginResponse From(IssuedTokens tokens) =>
+        new(tokens.IdToken, tokens.AccessToken, tokens.RefreshToken, tokens.ExpiresIn, tokens.TokenType);
+}
+
+/// <summary>
+/// A passwordless challenge to answer. <c>Session</c> goes back unchanged with the answer.
+/// <c>CodeDestination</c> is set for one-time codes; <c>CredentialRequestOptions</c> — WebAuthn
+/// request options as JSON — for passkeys.
+/// </summary>
+public sealed record ChallengeStartedResponse(
+    string Factor,
+    string Session,
+    string? CodeDestination,
+    string? CredentialRequestOptions);

@@ -16,7 +16,10 @@ namespace Padi.Services.Authentication
     public class PadiSsoPocStack : Stack
     {
         public UserPool UserPool { get; }
+        /// <summary>The browser's client: registration, password reset, hosted external sign-in. No sign-in flows.</summary>
         public UserPoolClient UserPoolClient { get; }
+        /// <summary>Server-only client every API sign-in runs on. Has a secret; never given to a browser.</summary>
+        public UserPoolClient SignInClient { get; }
         /// <summary>Server-only client for the magic-link custom-auth flow. Never given to a browser.</summary>
         public UserPoolClient MagicLinkClient { get; }
         public UserPoolDomain UserPoolDomain { get; }  // null while customDomainEnabled is false
@@ -234,6 +237,18 @@ namespace Padi.Services.Authentication
                 MemorySize = 256,
             });
 
+            // Enforces the API's sign-up rules on every self sign-up, including direct calls to
+            // Cognito's SignUp that bypass the API. See CheckSelfSignUp.
+            var preSignUpFn = new Function(this, "PreSignUpFn", new FunctionProps
+            {
+                FunctionName = "padi-sso-poc-pre-sign-up",
+                Runtime = Runtime.DOTNET_10,
+                Handler = "PreSignUpLambda::Padi.Services.Authentication.Cognito.PreSignUp.Function::Handler",
+                Code = LambdaCode("PreSignUpLambda"),
+                Timeout = Duration.Seconds(30),
+                MemorySize = 256,
+            });
+
             // Where the magic-link client's id is published for the Verify trigger. A fixed
             // name rather than a reference, because the trigger belongs to the same pool as
             // that client: referencing the client from the trigger would make the pool depend
@@ -310,8 +325,21 @@ namespace Padi.Services.Authentication
                 },
                 PasskeyRelyingPartyId = passkeyRelyingPartyId,
                 PasskeyUserVerification = PasskeyUserVerification.PREFERRED,
-                AutoVerify = new AutoVerifiedAttrs { Email = true, Phone = true },
-                KeepOriginal = new KeepOriginalAttrs { Email = true, Phone = true },
+                // Email only. Sign-up accepts an optional phone number, and with both attributes
+                // auto-verified Cognito sends the confirmation code by SMS whenever a phone is
+                // given — "Amazon Cognito sends a verification code to the phone number through
+                // SMS message" — leaving the email unverified and making sign-up depend on SNS
+                // SMS delivery, which this account has not set up. So a phone is stored
+                // unverified. Completing an SMS one-time-code sign-in verifies it, whatever this
+                // setting says. Phone is off in KeepOriginal as well: holding an update pending
+                // until it is verified means nothing when nothing sends the code.
+                AutoVerify = new AutoVerifiedAttrs { Email = true, Phone = false },
+                KeepOriginal = new KeepOriginalAttrs { Email = true, Phone = false },
+                // Explicit because CDK only adds the SNS role when phone is auto-verified, a
+                // sign-in alias, or an MFA factor — none of which holds now — yet SMS_OTP in
+                // SignInPolicy is refused on a pool with no SMS configuration. Same construct
+                // as the one auto-verification used to create, so the role is kept, not replaced.
+                EnableSmsRole = true,
                 StandardAttributes = new StandardAttributes
                 {
                     Email = new StandardAttribute { Required = false, Mutable = true },
@@ -335,9 +363,12 @@ namespace Padi.Services.Authentication
                     ["guardian_email"]    = new StringAttribute(new StringAttributeProps { Mutable = true }),                    
                     ["source_client_id"]  = new StringAttribute(new StringAttributeProps { Mutable = true }),
                 },
+                // Twelve, not six. Password guesses now reach Cognito only through the API, but
+                // there is no MFA, so a password is still the only factor for most users.
+                // Applies to new and changed passwords only; existing ones stay valid.
                 PasswordPolicy = new PasswordPolicy
                 {
-                    MinLength = 6,
+                    MinLength = 12,
                     RequireDigits = false,
                     RequireLowercase = true,
                     RequireUppercase = true,
@@ -349,6 +380,7 @@ namespace Padi.Services.Authentication
                 RemovalPolicy = RemovalPolicy.RETAIN,
                 LambdaTriggers = new UserPoolTriggers
                 {
+                    PreSignUp = preSignUpFn,
                     DefineAuthChallenge = defineFn,
                     CreateAuthChallenge = createFn,
                     VerifyAuthChallengeResponse = verifyFn,
@@ -380,6 +412,20 @@ namespace Padi.Services.Authentication
                     new PolicyStatement(new PolicyStatementProps
                     {
                         Actions   = new[] { "cognito-idp:AdminUpdateUserAttributes" },
+                        Resources = new[] { UserPool.UserPoolArn },
+                    }),
+                },
+            });
+
+            // The availability check. Standalone for the same cycle-avoidance reason.
+            new Policy(this, "PreSignUpCognitoPolicy", new PolicyProps
+            {
+                Roles = new[] { preSignUpFn.Role! },
+                Statements = new[]
+                {
+                    new PolicyStatement(new PolicyStatementProps
+                    {
+                        Actions   = new[] { "cognito-idp:ListUsers" },
                         Resources = new[] { UserPool.UserPoolArn },
                     }),
                 },
@@ -528,7 +574,7 @@ namespace Padi.Services.Authentication
             //
             // custom:signup_username stays writable because the API's own sign-up calls
             // Cognito's SignUp through the public client, and SignUp can only set attributes
-            // that client may write. The value only matters before confirmation, when the
+            // that client may write. (Sign-in, unlike sign-up, runs on the sign-in client.) The value only matters before confirmation, when the
             // account has no token anyone could use to change it.
             var userWritableAttributes = new ClientAttributes()
                 .WithStandardAttributes(new StandardAttributesMask
@@ -543,24 +589,30 @@ namespace Padi.Services.Authentication
                 })
                 .WithCustomAttributes("signup_username");
 
+            // Hosted sign-in stays only for external providers (Google, Apple, …), and only when
+            // one is enabled. Local users never sign in on the hosted pages: those take a
+            // password straight to Cognito, which is exactly what this design forbids.
+            var externalIdps = clientIdps.Where(p => p != UserPoolClientIdentityProvider.COGNITO).ToArray();
+            var hostedSignIn = externalIdps.Length > 0;
+
+            // The browser's client. It offers NO sign-in flow of its own: password, one-time
+            // code and passkey sign-in all run through the API on the sign-in client below,
+            // which has a secret. This client remains for registration and password reset —
+            // client-id-only operations that are not sign-in — and, if external providers are
+            // enabled, for hosted sign-in with them.
+            //
+            // It used to allow choice-based sign-in (USER_AUTH) for passkeys and codes, and
+            // Cognito always offers passwords under USER_AUTH — so anyone with this public id
+            // could try passwords directly against Cognito, outside the API's throttling.
             UserPoolClient = UserPool.AddClient("PadissoAppClient", new UserPoolClientOptions
             {
                 UserPoolClientName = "padisso-app-client",
                 AuthFlows = new AuthFlow
                 {
-                    UserSrp = true,
-                    // UserPassword stays off deliberately. Enabling it would let anyone
-                    // holding the public client id authenticate with a plaintext password
-                    // straight against Cognito, bypassing the API and its throttling.
+                    UserSrp = false,
                     UserPassword = false,
-                    // AdminUserPassword backs the API's /login. It requires IAM
-                    // credentials, so only the API's execution role can use it.
-                    AdminUserPassword = true,
-                    User = true,
-                    // Custom auth is off here and lives only on the magic-link client below.
-                    // This client's id is public, so custom auth on it let anyone start the
-                    // magic-link challenge without AWS credentials — and with the admin
-                    // proof, sign in as any user.
+                    AdminUserPassword = false,
+                    User = false,
                     Custom = false,
                 },
                 WriteAttributes = userWritableAttributes,
@@ -569,21 +621,58 @@ namespace Padi.Services.Authentication
                 AccessTokenValidity = Duration.Hours(1),
                 IdTokenValidity = Duration.Hours(1),
                 RefreshTokenValidity = Duration.Days(30),
-                SupportedIdentityProviders = clientIdps.ToArray(),
-                OAuth = new OAuthSettings
-                {
-                    Flows = new OAuthFlows { AuthorizationCodeGrant = true },
-                    Scopes = new[] { OAuthScope.EMAIL, OAuthScope.OPENID, OAuthScope.PROFILE },
-                    CallbackUrls = callbackUrls,
-                    LogoutUrls = logoutUrls,
-                },
+                SupportedIdentityProviders = hostedSignIn
+                    ? externalIdps
+                    : new[] { UserPoolClientIdentityProvider.COGNITO },
+                DisableOAuth = !hostedSignIn,
+                OAuth = hostedSignIn
+                    ? new OAuthSettings
+                    {
+                        Flows = new OAuthFlows { AuthorizationCodeGrant = true },
+                        Scopes = new[] { OAuthScope.EMAIL, OAuthScope.OPENID, OAuthScope.PROFILE },
+                        CallbackUrls = callbackUrls,
+                        LogoutUrls = logoutUrls,
+                    }
+                    : null,
             });
+
+            // Stated explicitly rather than left to CDK. When a client's ExplicitAuthFlows is
+            // omitted, Cognito does not read that as "none" — it enables SRP, custom auth and
+            // refresh. Refresh alone is inert here: this client issues tokens only through
+            // hosted sign-in with an external provider.
+            ((CfnUserPoolClient)UserPoolClient.Node.DefaultChild!).ExplicitAuthFlows =
+                new[] { "ALLOW_REFRESH_TOKEN_AUTH" };
 
             // Ensure every enabled provider exists before the client references it
             foreach (var idp in idpDependencies)
             {
                 UserPoolClient.Node.AddDependency(idp);
             }
+
+            // Every sign-in runs here, through the API: password (ADMIN_USER_PASSWORD_AUTH),
+            // one-time code and passkey (USER_AUTH), refresh and revocation. Its secret means
+            // Cognito rejects any sign-in call on it without a SECRET_HASH, so its id is
+            // useless to anyone but the API, which reads the secret from Cognito at first use.
+            SignInClient = UserPool.AddClient("PadissoSignInClient", new UserPoolClientOptions
+            {
+                UserPoolClientName = "padisso-api-sign-in",
+                AuthFlows = new AuthFlow
+                {
+                    AdminUserPassword = true,
+                    User = true,
+                },
+                GenerateSecret = true,
+                PreventUserExistenceErrors = true,
+                EnableTokenRevocation = true,
+                // Its tokens go to the browser, which presents them to Cognito directly for
+                // profile and passkey operations — so the same write limits apply.
+                WriteAttributes = userWritableAttributes,
+                AccessTokenValidity = Duration.Hours(1),
+                IdTokenValidity = Duration.Hours(1),
+                RefreshTokenValidity = Duration.Days(30),
+                SupportedIdentityProviders = new[] { UserPoolClientIdentityProvider.COGNITO },
+                DisableOAuth = true,
+            });
 
             // Server-only client for the magic-link flow, and the only client with custom
             // auth. Its secret means Cognito rejects any call on it — public or admin — that
@@ -728,7 +817,9 @@ namespace Padi.Services.Authentication
                     PrefixDomain.Node.AddDependency(UserPoolDomain);
                 }
 
-                if (prefixBranding == ManagedLoginVersion.NEWER_MANAGED_LOGIN)
+                // Only when some client actually uses hosted sign-in — which, with local sign-in
+                // confined to the API, means only when an external provider is enabled.
+                if (prefixBranding == ManagedLoginVersion.NEWER_MANAGED_LOGIN && hostedSignIn)
                 {
                     // Managed login renders from a style attached to the app client, which
                     // classic Hosted UI never needed. Cognito's provided defaults keep the pages

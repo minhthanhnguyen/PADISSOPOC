@@ -37,6 +37,11 @@ export type RegisterInput = {
   familyName?: string;
   /** YYYY-MM-DD, the only format Cognito's birthdate attribute accepts. */
   birthdate?: string;
+  /**
+   * Optional, E.164 ("+12065550123"). Stored unverified — the confirmation code still goes
+   * by email.
+   */
+  phoneNumber?: string;
 };
 
 /** Raised for any non-2xx response, carrying the message the API supplied. */
@@ -83,6 +88,50 @@ export async function registerAccount(input: RegisterInput): Promise<Registratio
  */
 export async function login(username: string, password: string): Promise<IssuedTokens> {
   return post<IssuedTokens>('/login', { username, password });
+}
+
+export type PasswordlessFactor = 'EMAIL_OTP' | 'SMS_OTP' | 'WEB_AUTHN';
+
+export type ChallengeStarted = {
+  factor: PasswordlessFactor;
+  /** Opaque. Send back unchanged with the answer. */
+  session: string;
+  /** Masked destination of a one-time code. */
+  codeDestination: string | null;
+  /** WebAuthn request options as JSON, for passkeys. */
+  credentialRequestOptions: string | null;
+};
+
+/**
+ * Starts passwordless sign-in through the API — the browser no longer calls Cognito's sign-in
+ * operations itself. Throws ApiError 409 when the account lacks that factor; the message
+ * lists what is available instead.
+ */
+export async function startChallenge(username: string, factor: PasswordlessFactor): Promise<ChallengeStarted> {
+  return post<ChallengeStarted>('/login/challenge', { username, factor });
+}
+
+/** `answer` is the code, or the passkey assertion JSON from `signWithPasskey`. */
+export async function answerChallenge(
+  username: string,
+  factor: PasswordlessFactor,
+  session: string,
+  answer: string,
+): Promise<IssuedTokens> {
+  return post<IssuedTokens>('/login/challenge/answer', { username, factor, session, answer });
+}
+
+/**
+ * New ID and access tokens. `username` is the access token's `username` claim, which Cognito
+ * requires for the refresh — not the name typed at sign-in.
+ */
+export async function refreshTokens(username: string, refreshToken: string): Promise<IssuedTokens> {
+  return post<IssuedTokens>('/token/refresh', { username, refreshToken });
+}
+
+/** Revokes the refresh token server-side. */
+export async function logout(refreshToken: string): Promise<void> {
+  await post<void>('/logout', { refreshToken });
 }
 
 /** Resolves on success; throws ApiError with the API's message otherwise. */

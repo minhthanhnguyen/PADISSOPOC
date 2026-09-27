@@ -62,6 +62,13 @@ public interface IUserSelfService
     Task<string?> StartEmailChangeAsync(string accessToken, string newEmail, CancellationToken ct = default);
 
     Task ConfirmEmailChangeAsync(string accessToken, string code, CancellationToken ct = default);
+
+    /// <summary>
+    /// Whether Cognito still honours this access token. False once the token is revoked (sign
+    /// out, global sign-out), the user is disabled or deleted. A JWT's signature and expiry
+    /// say none of that, so only Cognito can answer.
+    /// </summary>
+    Task<bool> IsSessionActiveAsync(string accessToken, CancellationToken ct = default);
 }
 
 /// <summary>Raised when a caller asks for something the directory rejects as invalid input.</summary>

@@ -19,6 +19,9 @@ namespace Padi.Services.Authentication
 
         public IUserPoolClient UserPoolClient { get; set; }
 
+        /// <summary>The server-side client every sign-in runs on. The API reads its secret at first use.</summary>
+        public IUserPoolClient SignInClient { get; set; }
+
         /// <summary>Tokens from a magic-link sign-in are issued for this client, not the public one.</summary>
         public IUserPoolClient MagicLinkClient { get; set; }
     }
@@ -88,6 +91,9 @@ namespace Padi.Services.Authentication
                 {
                     ["USER_POOL_ID"] = props.UserPool.UserPoolId,
                     ["USER_POOL_CLIENT_ID"] = props.UserPoolClient.UserPoolClientId,
+                    // An id only. The client's secret is read from Cognito at first use, never
+                    // placed here.
+                    ["SIGN_IN_CLIENT_ID"] = props.SignInClient.UserPoolClientId,
                     // A second client whose tokens the API accepts. Not a credential — just
                     // an id the token's client_id claim is compared against.
                     ["MAGIC_LINK_CLIENT_ID"] = props.MagicLinkClient.UserPoolClientId,
@@ -119,8 +125,11 @@ namespace Padi.Services.Authentication
                     "cognito-idp:AdminListGroupsForUser",
                     "cognito-idp:AdminAddUserToGroup",
                     "cognito-idp:AdminRemoveUserFromGroup",
-                    // Backs /login via ADMIN_USER_PASSWORD_AUTH.
+                    // Every sign-in: password, one-time code, passkey and refresh.
                     "cognito-idp:AdminInitiateAuth",
+                    "cognito-idp:AdminRespondToAuthChallenge",
+                    // Reads the sign-in client's secret at first use.
+                    "cognito-idp:DescribeUserPoolClient",
                 },
                 Resources = new[] { props.UserPool.UserPoolArn },
             }));
@@ -181,6 +190,10 @@ namespace Padi.Services.Authentication
                 ("POST", "signup/resend"),
                 ("POST", "signup/resend-by-username"),
                 ("POST", "login"),
+                ("POST", "login/challenge"),
+                ("POST", "login/challenge/answer"),
+                ("POST", "token/refresh"),
+                ("POST", "logout"),
                 ("POST", "password/forgot"),
                 ("POST", "password/reset"),
                 ("GET",  "health"),

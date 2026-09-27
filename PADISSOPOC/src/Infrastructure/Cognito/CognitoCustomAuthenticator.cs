@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using Amazon.CognitoIdentityProvider;
 using Amazon.CognitoIdentityProvider.Model;
 using Padi.Services.Authentication.Application.Abstractions;
@@ -73,9 +71,6 @@ public sealed class CognitoCustomAuthenticator(
             result.IdToken, result.AccessToken, result.RefreshToken, result.ExpiresIn ?? 0, result.TokenType);
     }
 
-    /// <summary>Base64 HMAC-SHA256 of username + client id, keyed by the client secret.</summary>
     private string SecretHash(string username) =>
-        Convert.ToBase64String(HMACSHA256.HashData(
-            Encoding.UTF8.GetBytes(options.ClientSecret),
-            Encoding.UTF8.GetBytes(username + options.ClientId)));
+        Cognito.SecretHash.Compute(options.ClientSecret, username, options.ClientId);
 }

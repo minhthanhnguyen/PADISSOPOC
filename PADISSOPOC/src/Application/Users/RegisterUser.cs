@@ -11,7 +11,8 @@ public sealed record RegisterUserCommand(
     string? GivenName,
     string? MiddleInitial,
     string? FamilyName,
-    string? Birthdate);
+    string? Birthdate,
+    string? PhoneNumber);
 
 /// <summary>
 /// Creates an unconfirmed account from a public, unauthenticated request.
@@ -48,6 +49,14 @@ public sealed class RegisterUser(
             throw new DirectoryValidationException(dateProblem);
         }
 
+        // Optional too. Stored unverified: the pool confirms accounts by email, and a phone
+        // is verified the first time the user completes an SMS one-time-code sign-in.
+        var (phoneNumber, phoneProblem) = PhoneNumberRules.Normalize(command.PhoneNumber);
+        if (phoneProblem is not null)
+        {
+            throw new DirectoryValidationException(phoneProblem);
+        }
+
         // Checked before the account exists. This is a deliberate disclosure — a sign-up
         // form has to say whether a name is taken — but it is confined to sign-up attempts
         // rather than exposed as a standalone lookup, so it costs an attacker a rate-limited
@@ -67,7 +76,8 @@ public sealed class RegisterUser(
             GivenName: command.GivenName?.Trim(),
             MiddleInitial: command.MiddleInitial?.Trim(),
             FamilyName: command.FamilyName?.Trim(),
-            Birthdate: birthdate);
+            Birthdate: birthdate,
+            PhoneNumber: phoneNumber);
 
         var result = await registration.SignUpAsync(account, ct);
 

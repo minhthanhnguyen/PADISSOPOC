@@ -1,6 +1,7 @@
 using Amazon.CognitoIdentityProvider;
 using Amazon.CognitoIdentityProvider.Model;
 using Padi.Services.Authentication.Application.Abstractions;
+using Padi.Services.Authentication.Application.Cognito;
 using Padi.Services.Authentication.Domain.Identity;
 
 namespace Padi.Services.Authentication.Infrastructure.Cognito;
@@ -49,6 +50,13 @@ public sealed class CognitoUserRegistration(
         {
             attributes.Add(new AttributeType { Name = "birthdate", Value = account.Birthdate });
         }
+        if (!string.IsNullOrWhiteSpace(account.PhoneNumber))
+        {
+            // Already E.164 (PhoneNumberRules). Because the pool auto-verifies email only, the
+            // confirmation code still goes by email; with both auto-verified, Cognito would
+            // send it by SMS instead.
+            attributes.Add(new AttributeType { Name = "phone_number", Value = account.PhoneNumber });
+        }
 
         try
         {
@@ -78,6 +86,19 @@ public sealed class CognitoUserRegistration(
             // The account id is a fresh identifier, so this means a collision on it rather
             // than on anything the user chose. Not actionable by the caller.
             throw new DirectoryValidationException("Could not create the account. Try again.");
+        }
+        catch (UserLambdaValidationException ex)
+        {
+            // The PreSignUp trigger refused it. The API validates the same rules first, so the
+            // one case that should reach here is a name taken between the API's check and
+            // SignUp — a 409, like the up-front check. Cognito wraps the trigger's message,
+            // so the stable code is matched rather than the whole text.
+            if (ex.Message.Contains(SignUpRejectedException.UsernameTaken, StringComparison.Ordinal))
+            {
+                throw new AliasAlreadyTakenException(account.ChosenUsername);
+            }
+
+            throw new DirectoryValidationException(ex.Message);
         }
     }
 
@@ -147,21 +168,9 @@ public sealed class CognitoUserRegistration(
         }
     }
 
-    public async Task<bool> IsUsernameAvailableAsync(
-        string userPoolId, string username, CancellationToken ct = default)
-    {
-        // preferred_username is one of the few filterable attributes. custom: attributes are
-        // not, so a name staged on an unconfirmed account cannot be seen here — two people
-        // can still race for the same name and the loser fails at confirmation.
-        var response = await cognito.ListUsersAsync(new ListUsersRequest
-        {
-            UserPoolId = userPoolId,
-            Filter = $"preferred_username = \"{username.Replace("\"", "\\\"")}\"",
-            Limit = 1,
-        }, ct);
-
-        return response.Users.Count == 0;
-    }
+    public Task<bool> IsUsernameAvailableAsync(
+        string userPoolId, string username, CancellationToken ct = default) =>
+        new CognitoUsernameAvailability(cognito).IsUsernameAvailableAsync(userPoolId, username, ct);
 
     public async Task<string?> FindPendingAccountIdAsync(
         string userPoolId, string chosenUsername, CancellationToken ct = default)

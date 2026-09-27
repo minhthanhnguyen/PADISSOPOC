@@ -87,6 +87,10 @@ public sealed class Program
             .AddJwtBearer(options =>
             {
                 options.Authority = settings.Issuer;
+                // Keep claim names exactly as Cognito issues them. The default remaps some
+                // well-known names — "sub" becomes a long ClaimTypes URI — so FindFirst("sub"),
+                // which the admin audit uses to name the actor, silently returned null.
+                options.MapInboundClaims = false;
                 options.TokenValidationParameters = new TokenValidationParameters
                 {
                     ValidateIssuer = true,
@@ -109,9 +113,10 @@ public sealed class Program
             .AddPolicy(Policies.Administrator, policy => policy
                 .RequireAuthenticatedUser()
                 .AddRequirements(new IssuedForClient(settings.TokenClientIds))
-                .RequireAssertion(context => context.User.IsInCognitoGroup(settings.AdminGroup)));
+                .AddRequirements(new CurrentAdministrator(settings.AdminGroup)));
 
         builder.Services.AddSingleton<IAuthorizationHandler, IssuedForClientHandler>();
+        builder.Services.AddSingleton<IAuthorizationHandler, CurrentAdministratorHandler>();
     }
 
     private static void AddApplicationServices(WebApplicationBuilder builder, ApiSettings settings)
@@ -129,7 +134,12 @@ public sealed class Program
         builder.Services.AddSingleton<IUserSelfService, CognitoUserSelfService>();
         builder.Services.AddSingleton<IUserRegistration, CognitoUserRegistration>();
         builder.Services.AddSingleton(new CognitoRegistrationOptions(settings.ClientId));
+        // Every sign-in runs on the secret-holding sign-in client; see CognitoSignInClient.
+        builder.Services.AddSingleton(sp => new CognitoSignInClient(
+            sp.GetRequiredService<IAmazonCognitoIdentityProvider>(), settings.UserPoolId, settings.SignInClientId));
         builder.Services.AddSingleton<IPasswordAuthenticator, CognitoPasswordAuthenticator>();
+        builder.Services.AddSingleton<IPasswordlessSignIn, CognitoPasswordlessSignIn>();
+        builder.Services.AddSingleton<ISessionTokens, CognitoSessionTokens>();
         builder.Services.AddSingleton<IPasswordReset, CognitoPasswordReset>();
         builder.Services.AddSingleton(new CognitoPasswordOptions(settings.UserPoolId, settings.ClientId));
         builder.Services.AddSingleton<IIdentifierFactory, GuidIdentifierFactory>();

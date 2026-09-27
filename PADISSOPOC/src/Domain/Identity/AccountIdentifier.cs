@@ -37,6 +37,24 @@ public static class AccountIdentifier
 
     public static string Compose(string chosenUsername, string uniquePart) => PrefixFor(chosenUsername) + uniquePart;
 
+    /// <summary>
+    /// Whether <paramref name="accountId"/> is exactly what <see cref="Compose"/> produces for
+    /// this name: its key, a hyphen, then a lowercase GUID. Anything else was not minted by
+    /// the API — a direct call to Cognito's SignUp choosing its own username.
+    /// </summary>
+    public static bool IsIdFor(string accountId, string chosenUsername)
+    {
+        var prefix = PrefixFor(chosenUsername);
+        if (!accountId.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var uniquePart = accountId[prefix.Length..];
+        return Guid.TryParseExact(uniquePart, "D", out var guid)
+            && string.Equals(uniquePart, guid.ToString("D"), StringComparison.Ordinal);
+    }
+
     /// <summary>The pool compares usernames case-insensitively, so the key and matching must too.</summary>
     public static bool SameName(string a, string b) =>
         string.Equals(Normalize(a), Normalize(b), StringComparison.Ordinal);

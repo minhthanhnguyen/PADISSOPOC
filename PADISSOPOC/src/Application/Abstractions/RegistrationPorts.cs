@@ -9,7 +9,8 @@ public sealed record NewAccount(
     string? GivenName,
     string? MiddleInitial,
     string? FamilyName,
-    string? Birthdate);
+    string? Birthdate,
+    string? PhoneNumber);
 
 /// <summary>
 /// The result of starting a registration.
@@ -21,11 +22,26 @@ public sealed record NewAccount(
 public sealed record RegistrationStarted(string AccountId, bool Confirmed, string? CodeDestination);
 
 /// <summary>
+/// Whether a name is free to become a <c>preferred_username</c>. Separate from
+/// <see cref="IUserRegistration"/> so the PreSignUp trigger can check it without taking on
+/// the rest of registration.
+/// </summary>
+public interface IUsernameAvailability
+{
+    /// <summary>
+    /// Needed because the alias is only assigned at confirmation: without this check two
+    /// people can register the same name, and the second is rejected at confirmation time
+    /// with an account already created and no way to change the staged name.
+    /// </summary>
+    Task<bool> IsUsernameAvailableAsync(string userPoolId, string username, CancellationToken ct = default);
+}
+
+/// <summary>
 /// Self-service registration. These are Cognito's unauthenticated operations — they take an
 /// app client id rather than IAM credentials, which is what makes them safe to expose
 /// through public endpoints.
 /// </summary>
-public interface IUserRegistration
+public interface IUserRegistration : IUsernameAvailability
 {
     Task<RegistrationStarted> SignUpAsync(NewAccount account, CancellationToken ct = default);
 
@@ -43,15 +59,6 @@ public interface IUserRegistration
     /// </summary>
     Task<string?> FindPendingAccountIdAsync(
         string userPoolId, string chosenUsername, CancellationToken ct = default);
-
-    /// <summary>
-    /// Whether a name is free to become a <c>preferred_username</c>.
-    ///
-    /// Needed because the alias is only assigned at confirmation: without this check two
-    /// people can register the same name, and the second is rejected at confirmation time
-    /// with an account already created and no way to change the staged name.
-    /// </summary>
-    Task<bool> IsUsernameAvailableAsync(string userPoolId, string username, CancellationToken ct = default);
 }
 
 /// <summary>

@@ -5,6 +5,7 @@
 $ErrorActionPreference = 'Stop'
 
 $projects = @(
+    'PreSignUpLambda',
     'DefineAuthChallengeLambda',
     'CreateAuthChallengeLambda',
     'VerifyAuthChallengeLambda',

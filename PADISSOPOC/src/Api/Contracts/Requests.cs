@@ -90,6 +90,13 @@ public sealed class RegisterRequest
 
     [RegularExpression(BirthdateRules.Pattern, ErrorMessage = "Date of birth must be YYYY-MM-DD.")]
     public string? Birthdate { get; init; }
+
+    /// <summary>
+    /// Optional, with the country code: "+12065550123". Spaces, hyphens, dots and parentheses
+    /// are accepted and stripped; the format itself is checked by PhoneNumberRules.
+    /// </summary>
+    [MaxLength(32)]
+    public string? PhoneNumber { get; init; }
 }
 
 public sealed class LoginRequest
@@ -101,6 +108,59 @@ public sealed class LoginRequest
     [Required(AllowEmptyStrings = false)]
     [MaxLength(256)]
     public string Password { get; init; } = "";
+}
+
+public sealed class StartChallengeRequest
+{
+    [Required(AllowEmptyStrings = false)]
+    [MaxLength(128)]
+    public string Username { get; init; } = "";
+
+    /// <summary><c>EMAIL_OTP</c>, <c>SMS_OTP</c> or <c>WEB_AUTHN</c>.</summary>
+    [Required(AllowEmptyStrings = false)]
+    [RegularExpression("^(EMAIL_OTP|SMS_OTP|WEB_AUTHN)$", ErrorMessage = "Factor must be EMAIL_OTP, SMS_OTP or WEB_AUTHN.")]
+    public string Factor { get; init; } = "";
+}
+
+public sealed class AnswerChallengeRequest
+{
+    /// <summary>The same name the challenge was started with.</summary>
+    [Required(AllowEmptyStrings = false)]
+    [MaxLength(128)]
+    public string Username { get; init; } = "";
+
+    [Required(AllowEmptyStrings = false)]
+    [RegularExpression("^(EMAIL_OTP|SMS_OTP|WEB_AUTHN)$", ErrorMessage = "Factor must be EMAIL_OTP, SMS_OTP or WEB_AUTHN.")]
+    public string Factor { get; init; } = "";
+
+    /// <summary>Returned by the start call. Cognito caps it at 2048 characters.</summary>
+    [Required(AllowEmptyStrings = false)]
+    [MaxLength(2048)]
+    public string Session { get; init; } = "";
+
+    /// <summary>The code, or the passkey's AuthenticationResponseJSON as a string.</summary>
+    [Required(AllowEmptyStrings = false)]
+    [MaxLength(16384)]
+    public string Answer { get; init; } = "";
+}
+
+public sealed class RefreshTokensRequest
+{
+    /// <summary>The <c>username</c> claim of the current access token — not the alias.</summary>
+    [Required(AllowEmptyStrings = false)]
+    [MaxLength(128)]
+    public string Username { get; init; } = "";
+
+    [Required(AllowEmptyStrings = false)]
+    [MaxLength(8192)]
+    public string RefreshToken { get; init; } = "";
+}
+
+public sealed class LogoutRequest
+{
+    [Required(AllowEmptyStrings = false)]
+    [MaxLength(8192)]
+    public string RefreshToken { get; init; } = "";
 }
 
 public sealed class ForgotPasswordRequest

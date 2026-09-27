@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { fetchAuthSession, getCurrentUser, signOut } from 'aws-amplify/auth';
-import { clearSession } from '../session';
+import { fetchAuthSession, getCurrentUser } from 'aws-amplify/auth';
+import { endSession } from '../session';
 import Passkeys from '../components/Passkeys';
 
 type Tokens = {
@@ -65,10 +65,10 @@ export default function Dashboard() {
   }, [load]);
 
   async function onSignOut() {
-    // Both stores, and the API session first: the token provider prefers it, so leaving it
-    // behind would have Amplify keep reporting a signed-in user after signOut().
-    clearSession();
-    await signOut();
+    // The session lives with the API, not Amplify — so sign-out revokes it through the API
+    // and forgets it locally. Amplify's signOut() is not used: it would try to revoke the
+    // token on the public client, which did not issue it.
+    await endSession();
     navigate('/login');
   }
 
@@ -122,6 +122,8 @@ export default function Dashboard() {
             </td>
           </tr>
           <tr><th>email_verified</th><td>{String(tokens.claims.email_verified ?? '—')}</td></tr>
+          <tr><th>phone_number</th><td>{claim('phone_number')}</td></tr>
+          <tr><th>phone_number_verified</th><td>{String(tokens.claims.phone_number_verified ?? '—')}</td></tr>
           <tr><th>given_name</th><td>{claim('given_name')}</td></tr>
           <tr><th>middle_name</th><td>{claim('middle_name')}</td></tr>
           <tr><th>family_name</th><td>{claim('family_name')}</td></tr>

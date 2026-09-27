@@ -25,6 +25,7 @@ flowchart LR
         end
 
         subgraph triggers["Cognito trigger Lambdas (.NET 10, ARM-free x64, 30s)"]
+            PRESIGNUP["PreSignUp"]
             DEFINE["DefineAuthChallenge"]
             CREATE["CreateAuthChallenge"]
             VERIFYC["VerifyAuthChallenge"]
@@ -39,7 +40,7 @@ flowchart LR
         end
 
         subgraph apigw["PadiSsoApiStack — separate stack"]
-            GW["API Gateway REST · regional<br/>8 named open routes → no authorizer<br/>everything else → Cognito authorizer<br/>api.global-np.padi.com/p/padi-auth-poc<br/>stage throttle"]
+            GW["API Gateway REST · regional<br/>12 named open routes → no authorizer<br/>everything else → Cognito authorizer<br/>api.global-np.padi.com/p/padi-auth-poc<br/>stage throttle"]
             API["Api — ASP.NET Core MVC in Lambda<br/>Registration · Session · Me · AdminUsers"]
         end
 
@@ -54,12 +55,14 @@ flowchart LR
 
     MSG["PADI Messaging Service<br/>messaging-stage.global-np.padi.com<br/>OAuth2 client_credentials"]
 
-    UI -->|"USER_SRP_AUTH · SignUp · OTP · WebAuthn"| POOL
+    UI -->|"own access token only:<br/>attributes · passkey registration"| POOL
     UI -.->|"hosted UI / social"| DOMAIN
     DOMAIN --- POOL
     UI -.->|"managed login"| PREFIXDOMAIN
     PREFIXDOMAIN --- POOL
 
+    POOL -->|"every self sign-up"| PRESIGNUP
+    PRESIGNUP -->|"ListUsers: name taken?"| POOL
     POOL --> DEFINE
     POOL --> CREATE
     POOL --> VERIFYC
@@ -73,11 +76,12 @@ flowchart LR
     UI -->|"GET /verify?token"| VER
 
     UI -->|"Bearer access token"| GW
-    UI -->|"/signup · /login · /password/*<br/>no token — none exists yet"| GW
+    UI -->|"/signup · /login · /login/challenge · /password/*<br/>/token/refresh · /logout — no token needed"| GW
     GW -->|"authorizer validates,<br/>then proxy integration"| API
     GW -.->|"validates token against"| POOL
     API -->|"/me — caller's access token"| POOL
     API -->|"/admin — service IAM role"| POOL
+    API -->|"all sign-in, refresh, sign-out —<br/>secret-holding sign-in client"| POOL
 
     EMAILSENDER -->|decrypt| KMS
     EMAILSENDER -->|"send templated email"| MSG
@@ -167,6 +171,7 @@ flowchart TD
     WEBAPI["src/Api — ASP.NET Core MVC<br/>controllers + contracts<br/>auth policies"]
 
     subgraph lam["src/Lambdas — thin adapters + composition roots"]
+        L9["PreSignUpLambda"]
         L1["DefineAuthChallengeLambda"]
         L2["CreateAuthChallengeLambda"]
         L3["VerifyAuthChallengeLambda"]
@@ -187,7 +192,7 @@ flowchart TD
         INot["Notifications<br/>SES / SNS delivery"]
     end
 
-    APP["src/Application<br/>use cases + ports<br/>CustomAuthChallenge · SendCognitoMessage<br/>RecordSignIn · AssignPreferredUsername<br/>RequestMagicLink · RedeemMagicLink<br/>RegisterUser · ChangeUsername · SetUserUsername"]
+    APP["src/Application<br/>use cases + ports<br/>CustomAuthChallenge · SendCognitoMessage<br/>RecordSignIn · AssignPreferredUsername · CheckSelfSignUp<br/>RequestMagicLink · RedeemMagicLink<br/>RegisterUser · ChangeUsername · SetUserUsername"]
     DOM["src/Domain<br/>MagicLinkToken · DeliveryChannel<br/>CognitoTriggerSource · SharedSecret"]
 
     CDK["src/Padisso<br/>CDK app — PadiSsoPocStack, PadiSsoApiStack"]
@@ -207,6 +212,8 @@ flowchart TD
 
     L8 --> ICog
     L8 --> ICore
+    L9 --> ICog
+    L9 --> ICore
     L4 --> ICore
     L5 --> ICore
     L6 --> ICore
@@ -233,6 +240,7 @@ only the AWS SDKs it uses. The published bundle sizes show what that buys:
 
 | Lambda | References | Size |
 |---|---|---|
+| `PreSignUpLambda` | `+ Cognito`, `Core` | 5.2 MB |
 | `DefineAuthChallengeLambda` | `Application` only | 249 KB |
 | `CreateAuthChallengeLambda` | `Application` only | 245 KB |
 | `VerifyAuthChallengeLambda` | `Application` + Secrets Manager and SSM SDKs | 5.9 MB |
@@ -338,13 +346,14 @@ than the one still active for sign-in. Confirmed against the live pool.
 
 ## 6. Project references
 
-The build graph of `src/Padisso.sln` — every `ProjectReference` in the 19 `.csproj` files,
+The build graph of `src/Padisso.sln` — every `ProjectReference` in the 20 `.csproj` files,
 and nothing inferred. Arrows point from the referencing project to the referenced one.
 
 ```mermaid
 flowchart TD
     subgraph entry["Runtime entry points — executables"]
         API["Api"]
+        PSU["PreSignUpLambda"]
         PA["PostAuthenticationLambda"]
         PC["PostConfirmationLambda"]
         RML["RequestMagicLinkLambda"]
@@ -372,11 +381,13 @@ flowchart TD
         CDK["Padisso — CDK app"]
     end
 
-    %% All nine entry points reference Application directly, drawn once from the subgraph.
+    %% All ten entry points reference Application directly, drawn once from the subgraph.
     entry --> APP
 
     API --> CORE
     API --> COG
+    PSU --> CORE
+    PSU --> COG
     PA --> CORE
     PA --> COG
     PC --> CORE
@@ -406,7 +417,7 @@ flowchart TD
 
 | Entry point | References |
 |---|---|
-| `Api`, `PostAuthenticationLambda`, `PostConfirmationLambda` | Application, Core, Cognito |
+| `Api`, `PreSignUpLambda`, `PostAuthenticationLambda`, `PostConfirmationLambda` | Application, Core, Cognito |
 | `RequestMagicLinkLambda` | Application, Core, Cognito, DynamoDb, Notifications |
 | `VerifyMagicLinkLambda` | Application, Core, Cognito, DynamoDb |
 | `CustomEmailSenderLambda` | Application, Core, Configuration, Messaging, Kms |

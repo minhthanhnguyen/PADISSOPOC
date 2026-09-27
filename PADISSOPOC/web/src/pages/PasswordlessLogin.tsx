@@ -1,61 +1,48 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { confirmSignIn, signIn } from 'aws-amplify/auth';
+import { answerChallenge, startChallenge, type PasswordlessFactor } from '../api-client';
+import { saveSession } from '../session';
+import { signWithPasskey } from '../webauthn';
 
-type Factor = 'EMAIL_OTP' | 'SMS_OTP' | 'WEB_AUTHN';
-
-const FACTORS: { id: Factor; label: string; blurb: string }[] = [
-  { id: 'EMAIL_OTP', label: 'Email code', blurb: 'Cognito emails a 6-digit code.' },
-  { id: 'SMS_OTP', label: 'SMS code', blurb: 'Requires a verified phone_number on the account.' },
-  { id: 'WEB_AUTHN', label: 'Passkey', blurb: 'Requires a passkey registered for this relying party.' },
+const FACTORS: { id: PasswordlessFactor; label: string; blurb: string }[] = [
+  { id: 'EMAIL_OTP', label: 'Email code', blurb: 'A 6-digit code is emailed to you.' },
+  { id: 'SMS_OTP', label: 'SMS code', blurb: 'Requires a verified phone number on the account.' },
+  { id: 'WEB_AUTHN', label: 'Passkey', blurb: 'Requires a passkey registered for this site.' },
 ];
+
+type Pending = { session: string; destination: string | null };
 
 export default function PasswordlessLogin() {
   const navigate = useNavigate();
 
   const [username, setUsername] = useState('');
-  const [factor, setFactor] = useState<Factor>('EMAIL_OTP');
-  const [awaitingCode, setAwaitingCode] = useState(false);
+  const [factor, setFactor] = useState<PasswordlessFactor>('EMAIL_OTP');
+  const [pending, setPending] = useState<Pending | null>(null);
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  async function startSignIn(e: FormEvent) {
+  // Every step goes through the management API: it relays Cognito's challenge on a
+  // server-side client, so the browser never calls Cognito's sign-in operations. For a
+  // passkey the browser only runs the WebAuthn ceremony, which has to happen on this device.
+  async function start(e: FormEvent) {
     e.preventDefault();
     setError(null);
-    setNotice(null);
     setBusy(true);
     try {
-      const { isSignedIn, nextStep } = await signIn({
-        username,
-        options: { authFlowType: 'USER_AUTH', preferredChallenge: factor },
-      });
+      const name = username.trim();
+      const challenge = await startChallenge(name, factor);
 
-      if (isSignedIn) {
-        navigate('/');
+      if (factor === 'WEB_AUTHN') {
+        if (!challenge.credentialRequestOptions) {
+          throw new Error('The sign-in service returned no passkey options.');
+        }
+        const assertion = await signWithPasskey(challenge.credentialRequestOptions);
+        await finish(name, challenge.session, assertion);
         return;
       }
 
-      switch (nextStep.signInStep) {
-        case 'CONFIRM_SIGN_IN_WITH_EMAIL_CODE':
-          setAwaitingCode(true);
-          setNotice('Code sent by email.');
-          break;
-        case 'CONFIRM_SIGN_IN_WITH_SMS_CODE':
-          setAwaitingCode(true);
-          setNotice('Code sent by SMS.');
-          break;
-        case 'CONTINUE_SIGN_IN_WITH_FIRST_FACTOR_SELECTION':
-          setError(
-            `Cognito would not honour ${factor}. Available: ${
-              nextStep.availableChallenges?.join(', ') ?? 'none reported'
-            }`,
-          );
-          break;
-        default:
-          setError(`Unhandled next step: ${nextStep.signInStep}`);
-      }
+      setPending({ session: challenge.session, destination: challenge.codeDestination });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -65,12 +52,11 @@ export default function PasswordlessLogin() {
 
   async function submitCode(e: FormEvent) {
     e.preventDefault();
+    if (!pending) return;
     setError(null);
     setBusy(true);
     try {
-      const { isSignedIn, nextStep } = await confirmSignIn({ challengeResponse: code.trim() });
-      if (isSignedIn) navigate('/');
-      else setError(`Unhandled next step: ${nextStep.signInStep}`);
+      await finish(username.trim(), pending.session, code.trim());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -78,27 +64,39 @@ export default function PasswordlessLogin() {
     }
   }
 
+  async function finish(name: string, session: string, answer: string) {
+    saveSession(await answerChallenge(name, factor, session, answer));
+    navigate('/');
+  }
+
+  function startOver() {
+    setPending(null);
+    setCode('');
+    setError(null);
+  }
+
   return (
     <main className="card">
       <h2>Passwordless sign-in</h2>
       <p className="muted">
-        Uses Cognito&apos;s choice-based <code>USER_AUTH</code> flow with an explicit first factor.
+        One-time codes and passkeys, relayed through the PADI API — this page never calls Cognito&apos;s
+        sign-in directly.
       </p>
 
-      {!awaitingCode ? (
-        <form onSubmit={startSignIn}>
+      {!pending ? (
+        <form onSubmit={start}>
           <label>
             Username
             <input
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              autoComplete="username"
+              autoComplete="username webauthn"
               required
             />
           </label>
 
           <fieldset>
-            <legend>First factor</legend>
+            <legend>Sign in with</legend>
             {FACTORS.map((f) => (
               <label key={f.id} className="radio">
                 <input
@@ -117,7 +115,6 @@ export default function PasswordlessLogin() {
           </fieldset>
 
           {error && <p className="error">{error}</p>}
-          {notice && <p className="notice">{notice}</p>}
 
           <button type="submit" disabled={busy}>
             {busy ? 'Starting…' : 'Continue'}
@@ -125,7 +122,9 @@ export default function PasswordlessLogin() {
         </form>
       ) : (
         <form onSubmit={submitCode}>
-          {notice && <p className="notice">{notice}</p>}
+          <p className="notice">
+            A code is on its way{pending.destination ? <> to <code>{pending.destination}</code></> : null}.
+          </p>
           <label>
             Verification code
             <input
@@ -143,16 +142,7 @@ export default function PasswordlessLogin() {
           <button type="submit" disabled={busy}>
             {busy ? 'Verifying…' : 'Sign in'}
           </button>
-          <button
-            type="button"
-            className="linkish"
-            onClick={() => {
-              setAwaitingCode(false);
-              setCode('');
-              setError(null);
-              setNotice(null);
-            }}
-          >
+          <button type="button" className="linkish" onClick={startOver}>
             Start over
           </button>
         </form>

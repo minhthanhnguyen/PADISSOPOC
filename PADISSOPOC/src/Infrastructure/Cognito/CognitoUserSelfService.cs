@@ -67,6 +67,21 @@ public sealed class CognitoUserSelfService(IAmazonCognitoIdentityProvider cognit
         }
     }
 
+    public async Task<bool> IsSessionActiveAsync(string accessToken, CancellationToken ct = default)
+    {
+        try
+        {
+            // GetUser authenticates the token against Cognito itself, so a revoked token or a
+            // disabled user fails here even though the JWT still validates locally.
+            await cognito.GetUserAsync(new GetUserRequest { AccessToken = accessToken }, ct);
+            return true;
+        }
+        catch (Exception ex) when (ex is NotAuthorizedException or UserNotFoundException)
+        {
+            return false;
+        }
+    }
+
     public async Task ConfirmEmailChangeAsync(string accessToken, string code, CancellationToken ct = default)
     {
         try

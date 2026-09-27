@@ -4,6 +4,7 @@ import { registerAccount } from '../api-client';
 import { PASSWORD_RULES } from '../auth-config';
 import { rememberAccountId } from '../pending-signup';
 import { USERNAME_RULES, validateUsername } from '../username-rules';
+import { PHONE_HINT, normalizePhoneNumber } from '../phone-rules';
 
 export default function SignUp() {
   const navigate = useNavigate();
@@ -15,6 +16,7 @@ export default function SignUp() {
     middleInitial: '',
     familyName: '',
     birthdate: '',
+    phoneNumber: '',
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -34,6 +36,15 @@ export default function SignUp() {
       return;
     }
 
+    // Same rule as the API's PhoneNumberRules; sent already normalized to E.164.
+    let phoneNumber: string | null;
+    try {
+      phoneNumber = normalizePhoneNumber(form.phoneNumber);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+
     setBusy(true);
     try {
       const chosen = form.username.trim();
@@ -50,6 +61,7 @@ export default function SignUp() {
         middleInitial: form.middleInitial,
         familyName: form.familyName,
         birthdate: form.birthdate,
+        phoneNumber: phoneNumber ?? undefined,
       });
 
       // Until the account is confirmed the alias does not exist, so this id is the only
@@ -82,8 +94,8 @@ export default function SignUp() {
 
         {/* None of these is required — they are optional attributes on the pool, so the
             form must not insist on them. Leaving one blank stores nothing. */}
-        {/* Two per row: .row gives each label flex: 1 with no min-width override, so a
-            third field overflows the card rather than shrinking. */}
+        {/* Two per row: .row splits the card width evenly, so a third field would squeeze
+            each input to roughly a hundred pixels. */}
         <div className="row">
           <label>
             First name
@@ -115,6 +127,19 @@ export default function SignUp() {
         <label>
           Email
           <input type="email" value={form.email} onChange={set('email')} autoComplete="email" required />
+          <small className="muted">Your confirmation code is sent here.</small>
+        </label>
+
+        <label>
+          Phone number
+          <input
+            type="tel"
+            value={form.phoneNumber}
+            onChange={set('phoneNumber')}
+            autoComplete="tel"
+            placeholder="+1 206 555 0123"
+          />
+          <small className="muted">{PHONE_HINT}</small>
         </label>
 
         <label>

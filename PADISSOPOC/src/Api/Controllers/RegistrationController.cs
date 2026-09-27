@@ -48,7 +48,8 @@ public sealed class RegistrationController(
                 GivenName: request.GivenName,
                 MiddleInitial: request.MiddleInitial,
                 FamilyName: request.FamilyName,
-                Birthdate: request.Birthdate),
+                Birthdate: request.Birthdate,
+                PhoneNumber: request.PhoneNumber),
             ct);
 
         // No Location header: the account is not addressable by an anonymous caller, and

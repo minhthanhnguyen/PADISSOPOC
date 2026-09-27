@@ -14,17 +14,89 @@ public sealed record SignInOutcome(IssuedTokens? Tokens, string? Challenge)
 /// <summary>
 /// Signs a user in with a username and password.
 ///
-/// Unlike the rest of the public surface, this cannot use a client-id-only Cognito
-/// operation: the app client deliberately has USER_PASSWORD_AUTH disabled, so the flow runs
-/// as ADMIN_USER_PASSWORD_AUTH under the service's IAM role. That is the point — an
-/// unauthenticated caller cannot reproduce it against Cognito directly, so sign-in can only
-/// happen through this API, where it is throttled and can be put behind WAF.
+/// Every sign-in — password, one-time code, passkey — runs on a server-side app client that
+/// has a secret, using the Admin* operations under the service's IAM role. No client a
+/// browser can use offers any sign-in flow, so a caller cannot reproduce these against
+/// Cognito directly: sign-in happens only through this API, where it is throttled and can be
+/// put behind WAF.
 /// </summary>
 public interface IPasswordAuthenticator
 {
     Task<SignInOutcome> SignInAsync(
         string username, string password, CancellationToken ct = default);
 }
+
+/// <summary>Passwordless first factors, as offered by Cognito's choice-based sign-in.</summary>
+public enum PasswordlessFactor
+{
+    EmailOtp,
+    SmsOtp,
+    Passkey,
+}
+
+/// <summary>
+/// A challenge Cognito has issued and the user must answer.
+/// </summary>
+/// <param name="Session">Opaque; must be sent back unchanged with the answer.</param>
+/// <param name="CodeDestination">Masked address or number a one-time code went to. Null for passkeys.</param>
+/// <param name="CredentialRequestOptions">
+/// For passkeys: the WebAuthn <c>PublicKeyCredentialRequestOptions</c> as JSON, for the
+/// browser to pass to <c>navigator.credentials.get</c>. Null for one-time codes.
+/// </param>
+public sealed record SignInChallenge(
+    PasswordlessFactor Factor,
+    string Session,
+    string? CodeDestination,
+    string? CredentialRequestOptions);
+
+/// <summary>
+/// Passwordless sign-in in two steps: start a challenge for the chosen factor, then answer it
+/// with the emailed or texted code, or the passkey assertion. The browser never talks to
+/// Cognito's sign-in operations itself — it only runs the WebAuthn ceremony locally.
+/// </summary>
+public interface IPasswordlessSignIn
+{
+    Task<SignInChallenge> StartAsync(string username, PasswordlessFactor factor, CancellationToken ct = default);
+
+    /// <summary>
+    /// <paramref name="answer"/> is the code for one-time codes, or the WebAuthn
+    /// <c>AuthenticationResponseJSON</c> for passkeys.
+    /// </summary>
+    Task<SignInOutcome> AnswerAsync(
+        string username, PasswordlessFactor factor, string session, string answer, CancellationToken ct = default);
+}
+
+/// <summary>
+/// Refreshing and revoking the tokens sign-in issued. Both need the server-side client's
+/// secret, which is why the browser cannot do either itself.
+/// </summary>
+public interface ISessionTokens
+{
+    /// <summary>
+    /// New ID and access tokens. <paramref name="username"/> is the <c>username</c> claim of
+    /// the current tokens — Cognito keys the secret hash for a refresh on it, not on an alias.
+    /// </summary>
+    Task<IssuedTokens> RefreshAsync(string username, string refreshToken, CancellationToken ct = default);
+
+    /// <summary>Revokes the refresh token and the access tokens issued from it.</summary>
+    Task RevokeAsync(string refreshToken, CancellationToken ct = default);
+}
+
+/// <summary>
+/// The requested passwordless factor is not available for this account — no passkey
+/// registered, no phone number, and so on. <see cref="Available"/> lists what Cognito offered.
+/// </summary>
+public sealed class FactorUnavailableException(IReadOnlyList<string> available)
+    : Exception("That sign-in method is not available for this account.")
+{
+    public IReadOnlyList<string> Available { get; } = available;
+}
+
+/// <summary>
+/// A challenge answer or token refresh was rejected: a wrong or expired code, a passkey
+/// Cognito would not accept, an expired sign-in session, or a revoked refresh token.
+/// </summary>
+public sealed class ChallengeFailedException(string message) : Exception(message);
 
 /// <summary>
 /// Self-service password reset for a user who cannot sign in.

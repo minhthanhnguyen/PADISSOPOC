@@ -4,20 +4,19 @@ using Padi.Services.Authentication.Application.Abstractions;
 
 namespace Padi.Services.Authentication.Infrastructure.Cognito;
 
-/// <summary>The pool and app client the password flows — sign-in and reset — run against.</summary>
+/// <summary>The pool and public app client password reset runs against — client-id-only operations.</summary>
 public sealed record CognitoPasswordOptions(string UserPoolId, string ClientId);
 
 /// <summary>
-/// Password sign-in via ADMIN_USER_PASSWORD_AUTH.
+/// Password sign-in via ADMIN_USER_PASSWORD_AUTH on the server-side sign-in client.
 ///
-/// This is an admin operation and needs the service's IAM role, which is the reason for
-/// choosing it over USER_PASSWORD_AUTH: enabling the latter on the app client would let
-/// anyone holding the public client id perform plaintext authentication against Cognito
-/// directly, bypassing this API along with its throttling and WAF.
+/// Two things keep it off Cognito's public surface: the admin flow needs the service's IAM
+/// role, and the client needs its secret. The browser's own client offers no sign-in flow at
+/// all, so passwords can only be checked through this API, with its throttling and WAF.
 /// </summary>
 public sealed class CognitoPasswordAuthenticator(
     IAmazonCognitoIdentityProvider cognito,
-    CognitoPasswordOptions options) : IPasswordAuthenticator
+    CognitoSignInClient client) : IPasswordAuthenticator
 {
     public async Task<SignInOutcome> SignInAsync(
         string username, string password, CancellationToken ct = default)
@@ -27,13 +26,14 @@ public sealed class CognitoPasswordAuthenticator(
         {
             response = await cognito.AdminInitiateAuthAsync(new AdminInitiateAuthRequest
             {
-                UserPoolId = options.UserPoolId,
-                ClientId = options.ClientId,
+                UserPoolId = client.UserPoolId,
+                ClientId = client.ClientId,
                 AuthFlow = AuthFlowType.ADMIN_USER_PASSWORD_AUTH,
                 AuthParameters = new Dictionary<string, string>
                 {
                     ["USERNAME"] = username,
                     ["PASSWORD"] = password,
+                    ["SECRET_HASH"] = await client.SecretHashAsync(username, ct),
                 },
             }, ct);
         }
@@ -50,6 +50,10 @@ public sealed class CognitoPasswordAuthenticator(
         {
             throw new AuthenticationFailedException();
         }
+        catch (Exception ex) when (ex is TooManyRequestsException or LimitExceededException)
+        {
+            throw new TooManyAttemptsException();
+        }
 
         // A challenge means Cognito will not issue tokens yet — MFA, a forced password
         // change, and so on. Reported rather than swallowed, so an unhandled flow is
@@ -62,11 +66,16 @@ public sealed class CognitoPasswordAuthenticator(
         var result = response.AuthenticationResult
             ?? throw new AuthenticationFailedException();
 
-        return SignInOutcome.Succeeded(new IssuedTokens(
-            IdToken: result.IdToken,
-            AccessToken: result.AccessToken,
-            RefreshToken: result.RefreshToken,
-            ExpiresIn: result.ExpiresIn ?? 0,
-            TokenType: result.TokenType));
+        return SignInOutcome.Succeeded(CognitoTokens.From(result));
     }
+}
+
+internal static class CognitoTokens
+{
+    public static IssuedTokens From(AuthenticationResultType result) => new(
+        IdToken: result.IdToken,
+        AccessToken: result.AccessToken,
+        RefreshToken: result.RefreshToken,
+        ExpiresIn: result.ExpiresIn ?? 0,
+        TokenType: result.TokenType);
 }

@@ -27,6 +27,11 @@ public sealed class DirectoryExceptionHandler(IAuditLog audit) : IExceptionHandl
             // yet. The client keys on this to send the user back to confirmation.
             AccountNotConfirmedException e => (StatusCodes.Status403Forbidden, e.Message),
             TooManyAttemptsException e => (StatusCodes.Status429TooManyRequests, e.Message),
+            ChallengeFailedException e => (StatusCodes.Status401Unauthorized, e.Message),
+            // 409: the request was fine, the account just lacks that factor. The detail lists
+            // what Cognito would offer instead, so the client can suggest one.
+            FactorUnavailableException e => (StatusCodes.Status409Conflict,
+                e.Available.Count == 0 ? e.Message : $"{e.Message} Available: {string.Join(", ", e.Available)}."),
             _ => (0, ""),
         };
 
